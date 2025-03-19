@@ -136,13 +136,20 @@ class client_socket_t
     void close() noexcept;
 
     /// @brief writes buffer to the socket. Blocks caller thread until finished.
-    /// @returns wrote bytes amout as 2nd field of the result. 1st field indicates if it was any
-    /// error.
+    /// @returns remaining to write bytes amout as 2nd field of the result (0 == all done). 1st
+    /// field indicates if it was any error.
     Result write_all(const void *buf, std::size_t size_buf) const noexcept;
 
     /// @brief reads @p size_buf from the socket. It blocks caller thread until finished.
     /// @returns total_read as 2nd field of the result. 1st field indicates if it was any error.
+    /// @note As it is blocking operation you would like to know exact size of the data before
+    /// reading, or end-of-data could be signaled by disconnect from other side.
     Result read_all(void *buf, std::size_t size_buf) const noexcept;
+
+    /// @brief Writes a string excluding \0. It blocks caller thread until finished.
+    /// @returns Same as @fn write_all(...).
+    [[nodiscard]]
+    Result write(const std::string &what) const;
 
     /// @brief resolves host into IPs list as strings.
     /// @param host_name - domain / host to translate to IP. Can be null to receive server's address
@@ -150,6 +157,11 @@ class client_socket_t
     /// @param type - defines what type of address you want to get.
     static std::list<std::string> hostname_to_ip(const char *host_name,
                                                  const EIpType type) noexcept;
+
+    explicit operator bool() const noexcept
+    {
+        return static_cast<bool>(m_sockfd);
+    }
 
   private:
     CManagedFd m_sockfd;       // socket descriptor
@@ -160,6 +172,8 @@ class client_socket_t
 class tcp_server_t
 {
   public:
+    ///@brief Constructs listening socket on @p server_port. To start accept connections, call
+    /// accept*().
     explicit tcp_server_t(const std::uint16_t server_port);
     MOVEONLY_ALLOWED(tcp_server_t);
     ~tcp_server_t() = default;

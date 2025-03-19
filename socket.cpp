@@ -162,6 +162,11 @@ void client_socket_t::close() noexcept
     memset(&m_sockaddr_in, 0, sizeof(m_sockaddr_in));
 }
 
+client_socket_t::Result client_socket_t::write(const std::string &what) const
+{
+    return write_all(what.c_str(), what.length());
+}
+
 client_socket_t::Result client_socket_t::write_all(const void *_buf,
                                                    std::size_t size_buf) const noexcept
 {
@@ -410,7 +415,6 @@ EIoStatus tcp_client_t::connect() noexcept
         // establish the connection to the server
         if (::connect(fd, copy_cast<sockaddr *>(&server_addr), sizeof(server_addr)) < 0)
         {
-            std::cerr << "Client->Server Connect Error: " << parse_error(errno) << std::endl;
             return EIoStatus::Error;
         }
         m_client_socket = {std::move(fd), server_addr};
