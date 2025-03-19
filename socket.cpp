@@ -1,4 +1,5 @@
 // Copyright [2016] [Pedro Vicente]
+// Fixes     [2025] [Oleksiy Zakharov]
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,187 +13,205 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "socket.hh"
+#include "socket.hpp" // IWYU pragma: keep
 
-#include <sys/poll.h>
+#include "runners.h"
 
+#include <memory.h> // NOLINT
+#include <poll.h>
+#include <string.h> // NOLINT
+#include <unistd.h>
+
+#include <array>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <ctime>
+#include <iostream>
+#include <iterator>
+#include <list>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <utility>
 
-constexpr int MAXPENDING = 15; // maximum outstanding connection requests
-constexpr std::chrono::milliseconds kAcceptPollTimeout(500);
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// wait()
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void wait(int nbr_secs)
-{
-#ifdef _MSC_VER
-    Sleep(1000 * nbr_secs);
-#else
-    sleep(nbr_secs);
-#endif
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// prt_time
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-std::string prt_time()
-{
-    time_t t;
-    time(&t);
-    std::string str_time(std::ctime(&t));
-    str_time.resize(str_time.size() - 1); // remove \n
-    str_time += " ";
-    return str_time;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// str_extract()
-// extract last component of file full path
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-std::string str_extract(const std::string &str_in)
-{
-    size_t pos = str_in.find_last_of("/\\");
-    std::string str = str_in.substr(pos + 1, str_in.size());
-    return str;
-}
-
-///////////////////////////////////////////////////////////////////////////////////////
-// set_daemon
-///////////////////////////////////////////////////////////////////////////////////////
-
-int set_daemon(const char *str_dir)
-{
 #if defined(_MSC_VER)
-    std::cout << str_dir << std::endl;
-#else
-    pid_t pid, sid;
-    pid = fork();
-    if (pid < 0)
-    {
-        std::cout << "cannot create pid: " << pid << std::endl;
-        exit(EXIT_FAILURE);
-    }
-    if (pid > 0)
-    {
-        std::cout << "created pid: " << pid << std::endl;
-        exit(EXIT_SUCCESS);
-    }
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
 
-    umask(0);
-
-    sid = setsid();
-    if (sid < 0)
-    {
-        std::cout << "cannot create sid: " << sid << std::endl;
-        exit(EXIT_FAILURE);
-    }
-
-    if (str_dir)
-    {
-        if ((chdir(str_dir)) < 0)
-        {
-            std::cout << "cannot chdir to: " << str_dir << std::endl;
-            exit(EXIT_FAILURE);
-        }
-        std::cout << "chdir to: " << str_dir << std::endl;
-    }
-#endif
-    return 0;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// socket_t::socket_t()
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-socket_t::socket_t() :
-    m_sockfd(0)
+struct WSAInitializer
 {
-    memset(&m_sockaddr_in, 0, sizeof(m_sockaddr_in));
+    WSAInitializer()
+    {
+        static_assert(false, "Please revise if this OK for Windows");
+        if (WSAStartup(MAKEWORD(2, 0), &ws_data) != 0)
+        {
+            throw std::runtime_error("Windows' startup failure.");
+        }
+    }
+    ~WSAInitializer()
+    {
+        WSACleanup();
+    }
+};
+
+using addr_len_t = int;
+#else
+    #include <arpa/inet.h>
+    #include <netdb.h> //hostent
+    #include <netinet/in.h>
+    #include <sys/socket.h>
+    #include <syslog.h>
+
+    #include <asm-generic/socket.h>
+
+struct WSAInitializer
+{
+};
+using addr_len_t = socklen_t;
+#endif
+
+std::string parse_error(int errNo)
+{
+    std::array<char, 256> tmp{0};
+    strerror_r(errNo, tmp.data(), tmp.size());
+    return {tmp.data()};
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// socket_t::socket_t()
-/////////////////////////////////////////////////////////////////////////////////////////////////////
+///@brief Some possible configurations here
+namespace {
+///@brief Should properly initialize WSA on Windows.
+[[maybe_unused]]
+const WSAInitializer initializeWSA_;
 
-socket_t::socket_t(socketfd_t sockfd, sockaddr_in sock_addr) :
-    m_sockfd(sockfd),
+///@brief Maximum outstanding connection requests
+constexpr int MAXPENDING = 15;
+
+///@brief How often poll/accept timeouts so thread can be interrupted. Too fast raises chances to
+/// miss clients' connections.
+constexpr std::chrono::milliseconds kAcceptPollTimeout(500);
+} // namespace
+
+constexpr CManagedFd::CManagedFd() noexcept :
+    fd(kNoSocket)
+{
+}
+
+constexpr CManagedFd::CManagedFd(socketfd_t value) noexcept :
+    fd(value)
+{
+}
+
+CManagedFd::CManagedFd(CManagedFd &&other) noexcept :
+    fd(other.fd.exchange(kNoSocket))
+{
+}
+
+CManagedFd::~CManagedFd()
+{
+    auto val = fd.exchange(kNoSocket);
+    if (is_valid_socket_fd(val))
+    {
+#if defined(_MSC_VER)
+        ::closesocket(val);
+#else
+        ::close(val);
+#endif
+    }
+}
+CManagedFd &CManagedFd::operator=(CManagedFd &&other) noexcept
+{
+    if (this != &other)
+    {
+        fd.store(other.fd.exchange(kNoSocket));
+    }
+    return *this;
+}
+
+CManagedFd::operator socketfd_t() const noexcept
+{
+    return get();
+}
+
+socketfd_t CManagedFd::get() const noexcept
+{
+    return fd.load();
+}
+
+// NOLINTNEXTLINE
+client_socket_t::client_socket_t() noexcept
+{
+    close();
+}
+
+client_socket_t::client_socket_t(CManagedFd sockfd, sockaddr_in sock_addr) noexcept :
+    m_sockfd(std::move(sockfd)),
     m_sockaddr_in(sock_addr)
 {
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// socket_t::close()
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void socket_t::close()
+client_socket_t::~client_socket_t() noexcept
 {
-#if defined(_MSC_VER)
-    ::closesocket(m_sockfd);
-#else
-    ::close(m_sockfd);
-#endif
-    // clear members
-    memset(&m_sockaddr_in, 0, sizeof(m_sockaddr_in));
-    m_sockfd = 0;
+    close();
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// socket_t::write_all
-//::send
-// http://man7.org/linux/man-pages/man2/send.2.html
-// The system calls send(), sendto(), and sendmsg() are used to transmit
-// a message to another socket.
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-int socket_t::write_all(const void *_buf, int size_buf)
+void client_socket_t::close() noexcept
 {
+    m_sockfd = CManagedFd();
+    memset(&m_sockaddr_in, 0, sizeof(m_sockaddr_in));
+}
+
+client_socket_t::Result client_socket_t::write_all(const void *_buf,
+                                                   std::size_t size_buf) const noexcept
+{
+    //::send
+    // http://man7.org/linux/man-pages/man2/send.2.html
+    // The system calls send(), sendto(), and sendmsg() are used to transmit
+    // a message to another socket.
+
     const char *buf = static_cast<const char *>(_buf); // can't do pointer arithmetic on void*
-    int sent_size;                                     // size in bytes sent or -1 on error
-    int size_left;                                     // size in bytes left to send
-    const int flags = 0;
-    size_left = size_buf;
-    while (size_left > 0)
+    EIoStatus res = EIoStatus::Ok;
+    std::size_t size_left = size_buf;
+    for (; size_left > 0;)
     {
-        sent_size = ::send(m_sockfd, buf, size_left, flags);
-        if (-1 == sent_size)
+        static const int kFlags = 0;
+        auto sent_size = ::send(m_sockfd, buf, size_left, kFlags);
+        static_assert(std::is_signed_v<decltype(sent_size)>);
+
+        if (sent_size < 0)
         {
-            std::cout << "send error: " << strerror(errno) << std::endl;
-            return -1;
+            std::cerr << "send error: " << parse_error(errno) << std::endl;
+            res = EIoStatus::Error;
+            break;
         }
         size_left -= sent_size;
-        buf += sent_size;
+        std::advance(buf, sent_size);
     }
-    return 1;
+    return {res, size_left};
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// socket_t::read_all
-// read SIZE_BUF bytes of data from m_sockfd into buffer BUF
-// return total size read
-// http://man7.org/linux/man-pages/man2/recv.2.html
-// The recv(), recvfrom(), and recvmsg() calls are used to receive
-// messages from a socket.
-// NOTE: assumes : 1) blocking socket 2) socket closed , that makes ::recv return 0
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-int socket_t::read_all(void *_buf, int size_buf)
+client_socket_t::Result client_socket_t::read_all(void *_buf, std::size_t size_buf) const noexcept
 {
+    // http://man7.org/linux/man-pages/man2/recv.2.html
+    // The recv(), recvfrom(), and recvmsg() calls are used to receive
+    // messages from a socket.
+    // NOTE: assumes : 1) blocking socket 2) socket closed , that makes ::recv return 0
+
     char *buf = static_cast<char *>(_buf); // can't do pointer arithmetic on void*
-    int recv_size;                         // size in bytes received or -1 on error
-    int size_left;                         // size in bytes left to send
-    const int flags = 0;
-    int total_recv_size = 0;
-    size_left = size_buf;
-    while (size_left > 0)
+    std::size_t total_recv_size = 0;
+    EIoStatus res = EIoStatus::Ok;
+    for (std::size_t size_left = size_buf; size_left > 0;)
     {
-        recv_size = ::recv(m_sockfd, buf, size_left, flags);
-        if (-1 == recv_size)
+        static const int kFlags = 0;
+        auto recv_size = ::recv(m_sockfd, buf, size_left, kFlags);
+        static_assert(std::is_signed_v<decltype(recv_size)>);
+
+        if (recv_size < 0)
         {
-            std::cout << "recv error: " << strerror(errno) << std::endl;
+            std::cerr << "recv error: " << parse_error(errno) << std::endl;
+            res = EIoStatus::Error;
+            break;
         }
         // everything received, exit
         if (0 == recv_size)
@@ -200,23 +219,20 @@ int socket_t::read_all(void *_buf, int size_buf)
             break;
         }
         size_left -= recv_size;
-        buf += recv_size;
         total_recv_size += recv_size;
+        std::advance(buf, recv_size);
     }
-    return total_recv_size;
+    return {res, total_recv_size};
 }
 
-///////////////////////////////////////////////////////////////////////////////////////
-// socket_t::hostname_to_ip
-// The getaddrinfo function provides protocol-independent translation from an ANSI host name
-// to an address
-///////////////////////////////////////////////////////////////////////////////////////
-
-int socket_t::hostname_to_ip(const char *host_name, std::array<char, 100> &ip)
+std::list<std::string> client_socket_t::hostname_to_ip(const char *host_name) noexcept
 {
-    struct addrinfo hints, *servinfo, *p;
-    struct sockaddr_in *h;
+    // The getaddrinfo function provides protocol-independent translation from an ANSI host name
+    // to an address.
 
+    std::list<std::string> result;
+
+    struct addrinfo hints{}, *servinfo = nullptr;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -224,283 +240,168 @@ int socket_t::hostname_to_ip(const char *host_name, std::array<char, 100> &ip)
 
     if (getaddrinfo(host_name, "http", &hints, &servinfo) != 0)
     {
-        return 1;
+        return result;
     }
 
-    for (p = servinfo; p != NULL; p = p->ai_next)
+    try
     {
-        h = (struct sockaddr_in *)p->ai_addr;
-        strncpy(ip.data(), inet_ntoa(h->sin_addr), ip.size());
+        std::array<char, INET_ADDRSTRLEN + 1u> buffer{};
+        for (auto p = servinfo; p != nullptr; p = p->ai_next)
+        {
+            const auto h = copy_cast<sockaddr_in *>(p->ai_addr);
+            buffer.fill(0);
+            if (inet_ntop(AF_INET, h, buffer.data(), INET_ADDRSTRLEN))
+            {
+                result.emplace_back(buffer.data());
+            }
+        }
+    }
+    catch (...) // NOLINT
+    {
     }
 
     freeaddrinfo(servinfo);
-    return 0;
+    return result;
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_server_t::tcp_server_t
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-tcp_server_t::tcp_server_t(const unsigned short server_port) :
-    socket_t()
+tcp_server_t::tcp_server_t(const uint16_t server_port) :
+    listenFd{::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)}
 {
-#if defined(_MSC_VER)
-    WSADATA ws_data;
-    if (WSAStartup(MAKEWORD(2, 0), &ws_data) != 0)
+    if (!listenFd)
     {
-        exit(1);
-    }
-#endif
-    sockaddr_in server_addr; // local address
-
-    // create TCP socket for incoming connections
-    if ((m_sockfd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
-    {
-        std::cout << "socket error: " << std::endl;
-        exit(1);
+        throw std::runtime_error("Could not create server TCP socket.");
     }
 
     // allow socket descriptor to be reuseable
     int on = 1;
-    if (setsockopt(m_sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&on, sizeof(on)) < 0)
+    if (setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
     {
-        std::cout << "setsockopt error: " << std::endl;
-        exit(1);
+        throw std::runtime_error("Could not set options on server TCP socket.");
     }
 
     // construct local address structure
+    sockaddr_in server_addr{};                       // local address
     memset(&server_addr, 0, sizeof(server_addr));    // zero out structure
     server_addr.sin_family = AF_INET;                // internet address family
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY); // any incoming interface
     server_addr.sin_port = htons(server_port);       // local port
 
     // bind to the local address
-    if (::bind(m_sockfd, (sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    if (::bind(listenFd, copy_cast<const sockaddr *>(&server_addr), sizeof(server_addr)) < 0)
     {
         // bind error: Permission denied
         // probably trying to bind a port under 1024. These ports usually require root privileges to
         // be bound.
-        std::cout << "bind error: " << std::endl;
-        exit(1);
+        throw std::runtime_error("Could not bind server TCP socket.");
     }
 
     // mark the socket so it will listen for incoming connections
-    if (::listen(m_sockfd, MAXPENDING) < 0)
+    if (::listen(listenFd, MAXPENDING) < 0)
     {
-        std::cout << "listen error: " << std::endl;
-        exit(1);
+        throw std::runtime_error("Could listen server TCP socket.");
     }
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_server_t::~tcp_server_t
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-tcp_server_t::~tcp_server_t()
+client_socket_t tcp_server_t::accept()
 {
-#if defined(_MSC_VER)
-    WSACleanup();
-#endif
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_server_t::accept
-//::accept will block until a socket is opened with::connect
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-socket_t tcp_server_t::accept()
-{
-    sockaddr_in addr_client; // client address
-    socketfd_t fd;           // socket descriptor
-#if defined(_MSC_VER)
-    int len_addr; // length of client address data structure
-#else
-    socklen_t len_addr;
-#endif
-
-    // set length of client address structure (in-out parameter)
-    len_addr = sizeof(addr_client);
+    sockaddr_in addr_client{}; // client address
+    addr_len_t len_addr = sizeof(addr_client);
 
     // wait for a client to connect
-    if ((fd = ::accept(m_sockfd, (struct sockaddr *)&addr_client, &len_addr)) < 0)
+    CManagedFd client_socket(::accept(listenFd, copy_cast<sockaddr *>(&addr_client), &len_addr));
+    if (client_socket)
     {
-        std::cout << "accept error " << std::endl;
+        return {std::move(client_socket), addr_client};
     }
-
-    socket_t socket(fd, addr_client);
-    return socket;
+    std::cerr << "Accept Error: " << parse_error(errno) << std::endl;
+    return {};
 }
 
-std::shared_ptr<socket_t> tcp_server_t::accept_autoclose(utility::runnerint_t is_interrupted_ptr)
+client_socket_t tcp_server_t::accept_autoclose(const utility::runnerint_t &is_interrupted_ptr)
 {
-    sockaddr_in addr_client; // client address
-    socketfd_t fd;           // socket descriptor
-#if defined(_MSC_VER)
-    int len_addr; // length of client address data structure
-#else
-    socklen_t len_addr;
-#endif
-
-    // set length of client address structure (in-out parameter)
-    len_addr = sizeof(addr_client);
+    sockaddr_in addr_client{}; // client address
+    addr_len_t len_addr = sizeof(addr_client);
 
     // set of socket descriptors
-    struct pollfd fds[1];
-    memset(fds, 0, sizeof(fds));
-
-    fds[0].fd = m_sockfd;
-    fds[0].events = POLLIN;
+    // NOLINTNEXTLINE
+    std::array<pollfd, 1u> fds = {
+      pollfd{listenFd, POLLIN, 0}, // NOLINT
+    };
 
     while (!(*is_interrupted_ptr))
     {
-        if (poll(fds, 1, kAcceptPollTimeout.count()) < 1 || fds[0].revents != POLLIN)
+        // NOLINTNEXTLINE
+        if (poll(fds.data(), fds.size(), kAcceptPollTimeout.count()) < 1
+            || fds.front().revents != POLLIN)
         {
             continue;
         }
-        fds[0].revents = 0;
+        fds.front().revents = 0;
 
         // wait for a client to connect
-        if ((fd = ::accept(m_sockfd, (struct sockaddr *)&addr_client, &len_addr)) < 0)
+        CManagedFd client_socket(
+          ::accept(listenFd, copy_cast<sockaddr *>(&addr_client), &len_addr));
+        if (client_socket)
         {
-            std::cerr << "accept error " << std::endl;
+            return {std::move(client_socket), addr_client};
+        }
+        std::cerr << "Accept Error: " << parse_error(errno) << std::endl;
+    }
+    return {};
+}
+
+tcp_client_t::tcp_client_t(const char *host_name, const std::uint16_t server_port) :
+    m_server_port(server_port),
+    m_server_ip(client_socket_t::hostname_to_ip(host_name))
+{
+}
+
+EIoStatus tcp_client_t::connect(const char *host_name, const uint16_t server_port)
+{
+    m_server_ip = client_socket_t::hostname_to_ip(host_name);
+    m_server_port = server_port;
+    return connect();
+}
+
+EIoStatus tcp_client_t::connect() noexcept
+{
+    disconnect();
+    // create a stream socket using TCP
+    CManagedFd fd(::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP));
+    if (!fd)
+    {
+        std::cerr << "Client Socket Error: " << parse_error(errno) << std::endl;
+        return EIoStatus::Error;
+    }
+
+    // construct the server address structure
+    sockaddr_in server_addr{}; // server address
+    for (const auto &ip : m_server_ip)
+    {
+        memset(&server_addr, 0, sizeof(server_addr)); // zero out structure
+        server_addr.sin_family = AF_INET;             // internet address family
+        if (inet_pton(AF_INET, ip.c_str(), &server_addr.sin_addr) <= 0)
+        {
+            continue;
         }
 
-        return std::shared_ptr<socket_t>(new socket_t(fd, addr_client), [](socket_t *p) {
-            if (p)
-            {
-                p->close();
-                delete p;
-            }
-        });
+        server_addr.sin_port = htons(m_server_port); // server port
+
+        // establish the connection to the server
+        if (::connect(fd, copy_cast<sockaddr *>(&server_addr), sizeof(server_addr)) < 0)
+        {
+            std::cerr << "Client->Server Connect Error: " << parse_error(errno) << std::endl;
+            return EIoStatus::Error;
+        }
+        m_client_socket = {std::move(fd), server_addr};
+        return EIoStatus::Ok;
     }
 
-    return nullptr;
+    std::cerr << "inet_pton error: " << parse_error(errno) << std::endl;
+    return EIoStatus::Error;
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_client_t::tcp_client_t
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-tcp_client_t::tcp_client_t() :
-    socket_t()
+void tcp_client_t::disconnect() noexcept
 {
-#if defined(_MSC_VER)
-    WSADATA ws_data;
-    if (WSAStartup(MAKEWORD(2, 0), &ws_data) != 0)
-    {
-        exit(1);
-    }
-#endif
-}
-
-tcp_client_t::tcp_client_t(const char *host_name, const unsigned short server_port) :
-    socket_t(),
-    m_server_port(server_port)
-{
-#if defined(_MSC_VER)
-    WSADATA ws_data;
-    if (WSAStartup(MAKEWORD(2, 0), &ws_data) != 0)
-    {
-        exit(1);
-    }
-#endif
-
-    std::array<char, 100> server_ip;
-
-    // get ip address from hostname
-    hostname_to_ip(host_name, server_ip);
-
-    // store
-    m_server_ip = server_ip.data();
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_client_t::connect
-//::accept will block until a socket is opened with ::connect
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-int tcp_client_t::connect(const char *host_name, const unsigned short server_port)
-{
-    struct sockaddr_in server_addr; // server address
-    std::array<char, 100> server_ip;
-
-    // get ip address from hostname
-    hostname_to_ip(host_name, server_ip);
-
-    // store
-    m_server_ip = server_ip.data();
-    m_server_port = server_port;
-
-    // create a stream socket using TCP
-    if ((m_sockfd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
-    {
-        std::cout << "socket error: " << std::endl;
-        return -1;
-    }
-
-    // construct the server address structure
-    memset(&server_addr, 0, sizeof(server_addr)); // zero out structure
-    server_addr.sin_family = AF_INET;             // internet address family
-    if (inet_pton(AF_INET, m_server_ip.c_str(),
-                  &server_addr.sin_addr) <= 0) // server IP address
-    {
-        std::cout << "inet_pton error: " << strerror(errno) << std::endl;
-        return -1;
-    }
-    server_addr.sin_port = htons(m_server_port); // server port
-
-    // establish the connection to the server
-    if (::connect(m_sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
-    {
-        std::cout << "connect error: " << strerror(errno) << std::endl;
-        return -1;
-    }
-    return 0;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_client_t::connect
-//::accept will block until a socket is opened with ::connect
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-int tcp_client_t::connect()
-{
-    struct sockaddr_in server_addr; // server address
-
-    // create a stream socket using TCP
-    if ((m_sockfd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
-    {
-        std::cout << "socket error: " << std::endl;
-        return -1;
-    }
-
-    // construct the server address structure
-    memset(&server_addr, 0, sizeof(server_addr)); // zero out structure
-    server_addr.sin_family = AF_INET;             // internet address family
-    if (inet_pton(AF_INET, m_server_ip.c_str(),
-                  &server_addr.sin_addr) <= 0) // server IP address
-    {
-        std::cout << "inet_pton error: " << strerror(errno) << std::endl;
-        return -1;
-    }
-    server_addr.sin_port = htons(m_server_port); // server port
-
-    // establish the connection to the server
-    if (::connect(m_sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
-    {
-        std::cout << "connect error: " << strerror(errno) << std::endl;
-        return -1;
-    }
-    return 0;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-// tcp_client_t::~tcp_client_t
-/////////////////////////////////////////////////////////////////////////////////////////////////////
-
-tcp_client_t::~tcp_client_t()
-{
-#if defined(_MSC_VER)
-    WSACleanup();
-#endif
+    m_client_socket.close();
 }
