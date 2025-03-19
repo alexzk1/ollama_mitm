@@ -15,9 +15,10 @@
 #pragma once
 
 #include "cm_ctors.h"
-#include "runners.h"
+#include "runners.h" // IWYU pragma: keep
 
-#include <unistd.h>
+#include <memory.h> //NOLINT
+#include <unistd.h> //NOLINT
 
 #include <atomic>
 #include <cassert>
@@ -112,6 +113,13 @@ enum class EIoStatus : std::uint8_t {
     Error,
 };
 
+///@brief Defines what type of IP address you want to get by the resolving host name.
+enum class EIpType : std::uint8_t {
+    IPv4,
+    IPv6,
+    Both,
+};
+
 ///@brief Client's socket which allows read-write operations.
 class client_socket_t
 {
@@ -137,7 +145,11 @@ class client_socket_t
     Result read_all(void *buf, std::size_t size_buf) const noexcept;
 
     /// @brief resolves host into IPs list as strings.
-    static std::list<std::string> hostname_to_ip(const char *host_name) noexcept;
+    /// @param host_name - domain / host to translate to IP. Can be null to receive server's address
+    /// usable to bind.
+    /// @param type - defines what type of address you want to get.
+    static std::list<std::string> hostname_to_ip(const char *host_name,
+                                                 const EIpType type) noexcept;
 
   private:
     CManagedFd m_sockfd;       // socket descriptor

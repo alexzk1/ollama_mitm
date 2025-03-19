@@ -15,7 +15,7 @@
 
 #include "socket.hpp" // IWYU pragma: keep
 
-#include "runners.h"
+#include "runners.h" // IWYU pragma: keep
 
 #include <memory.h> // NOLINT
 #include <poll.h>
@@ -225,7 +225,8 @@ client_socket_t::Result client_socket_t::read_all(void *_buf, std::size_t size_b
     return {res, total_recv_size};
 }
 
-std::list<std::string> client_socket_t::hostname_to_ip(const char *host_name) noexcept
+std::list<std::string> client_socket_t::hostname_to_ip(const char *host_name,
+                                                       const EIpType type) noexcept
 {
     // The getaddrinfo function provides protocol-independent translation from an ANSI host name
     // to an address.
@@ -240,24 +241,42 @@ std::list<std::string> client_socket_t::hostname_to_ip(const char *host_name) no
 
     if (getaddrinfo(host_name, "http", &hints, &servinfo) != 0)
     {
+        std::cerr << "resolving error: " << parse_error(errno) << std::endl;
         return result;
     }
+
+    const bool get_v4 = type == EIpType::IPv4 || type == EIpType::Both;
+    const bool get_v6 = type == EIpType::IPv6 || type == EIpType::Both;
 
     try
     {
         std::array<char, INET_ADDRSTRLEN + 1u> buffer{};
         for (auto p = servinfo; p != nullptr; p = p->ai_next)
         {
-            const auto h = copy_cast<sockaddr_in *>(p->ai_addr);
             buffer.fill(0);
-            if (inet_ntop(AF_INET, h, buffer.data(), INET_ADDRSTRLEN))
+            if (p->ai_family == AF_INET && get_v4)
             {
-                result.emplace_back(buffer.data());
+                if (inet_ntop(AF_INET, &(copy_cast<sockaddr_in *>(p->ai_addr))->sin_addr,
+                              buffer.data(), buffer.size()))
+                {
+                    result.emplace_back(buffer.data());
+                }
+                continue;
+            }
+            if (p->ai_family == AF_INET6 && get_v6)
+            {
+                if (inet_ntop(AF_INET6, &(copy_cast<sockaddr_in6 *>(p->ai_addr))->sin6_addr,
+                              buffer.data(), buffer.size()))
+                {
+                    result.emplace_back(buffer.data());
+                }
+                continue;
             }
         }
     }
     catch (...) // NOLINT
     {
+        std::cerr << "Unknown Exception doing resolving." << std::endl;
     }
 
     freeaddrinfo(servinfo);
@@ -352,13 +371,14 @@ client_socket_t tcp_server_t::accept_autoclose(const utility::runnerint_t &is_in
 
 tcp_client_t::tcp_client_t(const char *host_name, const std::uint16_t server_port) :
     m_server_port(server_port),
-    m_server_ip(client_socket_t::hostname_to_ip(host_name))
+    m_server_ip(client_socket_t::hostname_to_ip(host_name, EIpType::IPv4))
 {
 }
 
 EIoStatus tcp_client_t::connect(const char *host_name, const uint16_t server_port)
 {
-    m_server_ip = client_socket_t::hostname_to_ip(host_name);
+    // I'm not sure if existing design will work for IPv6, so let it be fixed V4.
+    m_server_ip = client_socket_t::hostname_to_ip(host_name, EIpType::IPv4);
     m_server_port = server_port;
     return connect();
 }
