@@ -22,16 +22,18 @@ class CThreadPool
   public:
     using stopper_t = runnerint_t;
 
-    CThreadPool() = delete;
+    CThreadPool() :
+        CThreadPool(std::thread::hardware_concurrency())
+    {
+    }
     CThreadPool(const CThreadPool &other) = delete;
     CThreadPool &operator=(const CThreadPool &other) = delete;
-    // Move constructor and assignment operator are deleted
     CThreadPool(CThreadPool &&other) = delete;
     CThreadPool &operator=(CThreadPool &&other) = delete;
 
     /// @brief Constructs thread pool.
-    /// @param num_threads defines how many threads pool should have. Defaults to CPUs count.
-    explicit CThreadPool(const std::size_t num_threads = std::thread::hardware_concurrency())
+    /// @param num_threads defines how many threads pool should have.
+    explicit CThreadPool(const std::size_t num_threads)
     {
         threads_.reserve(num_threads);
         stop_.reserve(num_threads);
