@@ -179,7 +179,7 @@ class CTcpAcceptServer
 
     /// @brief Blocks caller thread until new client connects.
     /// @returns socket usable for communication with client, if it evaluates to false if couldn't
-    /// connect.
+    /// connect. When returned object is destroyed - connection will be closed.
     /// @note Caller thread cannot be interrupted while accept() is in progress.
     CClientSocket accept();
 
