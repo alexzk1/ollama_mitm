@@ -16,7 +16,7 @@ using runner_f_t = std::function<void(const runnerint_t should_int)>;
 inline auto startNewRunner(runner_f_t func)
 {
     using res_t = std::shared_ptr<std::thread>;
-    auto stop = runnerint_t(new std::atomic<bool>(false));
+    auto stop = std::make_shared<std::atomic<bool>>(false);
     return res_t(new std::thread(func, stop), [stop](auto ptrToDelete) {
         stop->store(true);
         if (ptrToDelete)
