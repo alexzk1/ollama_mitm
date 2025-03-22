@@ -28,7 +28,7 @@ target_include_directories(ollama_mitm PUBLIC
                     ${CMAKE_CURRENT_LIST_DIR}
                 )
 
-source_group("source" FILES ${BASE_FOLDER})
+source_group("source / main" FILES ${BASE_FOLDER})
 source_group("source / common" FILES ${COMMON_FOLDER})
 source_group("source / network" FILES ${NETWORK_FOLDER})
 
@@ -61,4 +61,5 @@ if (TESTS_LIST_FILES_COUNT GREATER 0)
                         ${CMAKE_CURRENT_LIST_DIR}
                     )
     add_test(NAME ollama_mitm_tests COMMAND ollama_mitm_tests)
+    source_group("tests" FILES ${TESTS_LIST})
 endif()
