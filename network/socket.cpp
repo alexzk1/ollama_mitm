@@ -15,7 +15,7 @@
 
 #include "socket.hpp" // IWYU pragma: keep
 
-#include "runners.h" // IWYU pragma: keep
+#include <common/runners.h> // IWYU pragma: keep
 
 #include <memory.h> // NOLINT
 #include <poll.h>

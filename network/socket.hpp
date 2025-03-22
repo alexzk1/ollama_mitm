@@ -14,9 +14,8 @@
 // limitations under the License.
 #pragma once
 
-#include "cm_ctors.h"
-#include "runners.h" // IWYU pragma: keep
-
+#include <common/cm_ctors.h>
+#include <common/runners.h>
 #include <memory.h> //NOLINT
 #include <unistd.h> //NOLINT
 
