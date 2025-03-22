@@ -20,6 +20,8 @@ namespace utility {
 class CThreadPool
 {
   public:
+    using stopper_t = runnerint_t;
+
     CThreadPool() = delete;
     CThreadPool(const CThreadPool &other) = delete;
     CThreadPool &operator=(const CThreadPool &other) = delete;
@@ -95,14 +97,17 @@ class CThreadPool
     }
 
     /// @brief Enqueue task for execution by the thread pool.
-    /// @tparam taTask type of task.
     /// @param task is task to enqueue. It should accept one parameter - stopper.
-    template <typename taTask>
-    void enqueue(taTask &&task)
+    template <typename taCallable>
+    void enqueue(taCallable &&task)
     {
+        static_assert(std::is_assignable_v<runner_f_t, taCallable>,
+                      "Callable should accepts runnerint_t as parameter");
+        static_assert(std::is_invocable_v<taCallable, stopper_t>,
+                      "Callable should be invocable with runnerint_t as parameter");
         {
             const std::unique_lock lock(queue_mutex_);
-            tasks_.emplace(std::forward<taTask>(task));
+            tasks_.emplace(std::forward<taCallable>(task));
         }
         cv_.notify_one();
     }
@@ -112,7 +117,7 @@ class CThreadPool
     std::vector<std::thread> threads_;
     // Flag to indicate whether the thread pool should stop
     // or not
-    std::vector<runnerint_t> stop_;
+    std::vector<stopper_t> stop_;
 
     // Queue of tasks
     std::queue<runner_f_t> tasks_;
