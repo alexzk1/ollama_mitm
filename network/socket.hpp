@@ -120,16 +120,16 @@ enum class EIpType : std::uint8_t {
 };
 
 ///@brief Client's socket which allows read-write operations.
-class client_socket_t
+class CClientSocket
 {
   public:
     ///@brief 1st field is status of the operation, second - number of bytes written or read.
     using Result = std::tuple<EIoStatus, std::size_t>;
 
-    client_socket_t() noexcept;
-    client_socket_t(CManagedFd sockfd, sockaddr_in sock_addr) noexcept;
-    ~client_socket_t() noexcept;
-    MOVEONLY_ALLOWED(client_socket_t);
+    CClientSocket() noexcept;
+    CClientSocket(CManagedFd sockfd, sockaddr_in sock_addr) noexcept;
+    ~CClientSocket() noexcept;
+    MOVEONLY_ALLOWED(CClientSocket);
 
     /// @brief Closes socket which is disconnect.
     void close() noexcept;
@@ -168,51 +168,55 @@ class client_socket_t
 };
 
 ///@brief TCP server which listens on a specific port and accepts incoming connections.
-class tcp_server_t
+class CTcpAcceptServer
 {
   public:
     ///@brief Constructs listening socket on @p server_port. To start accept connections, call
     /// accept*().
-    explicit tcp_server_t(const std::uint16_t server_port);
-    MOVEONLY_ALLOWED(tcp_server_t);
-    ~tcp_server_t() = default;
+    explicit CTcpAcceptServer(const std::uint16_t server_port);
+    MOVEONLY_ALLOWED(CTcpAcceptServer);
+    ~CTcpAcceptServer() = default;
 
     /// @brief Blocks caller thread until new client connects.
-    /// @returns client socket, it evaluates to false if couldn't connect.
-    client_socket_t accept();
+    /// @returns socket usable for communication with client, if it evaluates to false if couldn't
+    /// connect.
+    /// @note Caller thread cannot be interrupted while accept() is in progress.
+    CClientSocket accept();
 
     /// @brief Same as accept() except it checks the state of @p is_interrupted_ptr and stops
-    /// accepting if it evaluates to false.
-    client_socket_t accept_autoclose(const utility::runnerint_t &is_interrupted_ptr);
+    /// accepting loop if it evaluates to false.
+    /// @note This is usable to be called out of dedicated thread inside thread's loop.
+    CClientSocket accept_autoclose(const utility::runnerint_t &is_interrupted_ptr);
 
   private:
     CManagedFd listenFd;
 };
 
-///@brief TCP client which connects to a server.
-class tcp_client_t
+///@brief TCP client connection. This one initializes connection to remote.
+class CTcpClientConnecction
 {
   public:
-    ///@brief Sets server without connection to.
-    tcp_client_t(const char *host_name, const uint16_t server_port);
-    tcp_client_t() = default;
-    MOVEONLY_ALLOWED(tcp_client_t);
-    ~tcp_client_t() = default;
+    /// @brief Sets server without connection to.
+    CTcpClientConnecction(const char *host_name, const uint16_t server_port);
+    CTcpClientConnecction() = default;
+    MOVEONLY_ALLOWED(CTcpClientConnecction);
+    ~CTcpClientConnecction() = default;
 
-    ///@brief Connects to latest known server, set via ctor or overloaded connect method.
+    /// @brief Connects to latest known server, set via ctor or overloaded connect method.
     EIoStatus connect() noexcept;
 
-    ///@brief Sets new server and connects to it.
+    /// @brief Sets new server and connects to it.
     EIoStatus connect(const char *host_name, const std::uint16_t server_port);
 
-    ///@brief Disconnects from the server by closing socket. It can be connected back to the same
+    /// @brief Disconnects from the server by closing socket. It can be connected back to the same
     /// server using connect().
     /// It is safe to call it multiply times.
     void disconnect() noexcept;
 
-    ///@returns const reference to the socket, which can be connected by prior call to connect(...)
+    /// @returns const reference to the socket, which can be connected by prior call to connect(...)
+    /// @note It should be used to do actual I/O.
     [[nodiscard]]
-    const client_socket_t &socket() const noexcept
+    const CClientSocket &socket() const noexcept
     {
         return m_client_socket;
     }
@@ -220,5 +224,5 @@ class tcp_client_t
   private:
     std::uint16_t m_server_port{0};
     std::list<std::string> m_server_ip{};
-    client_socket_t m_client_socket{};
+    CClientSocket m_client_socket{};
 };

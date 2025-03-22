@@ -31,25 +31,25 @@ TEST_F(CSocketsTest, CopyCastTest)
 
 TEST_F(CSocketsTest, NameResolverTest)
 {
-    const auto ips = client_socket_t::hostname_to_ip("localhost", EIpType::IPv4);
+    const auto ips = CClientSocket::hostname_to_ip("localhost", EIpType::IPv4);
     EXPECT_FALSE(ips.empty());
     EXPECT_TRUE(std::any_of(ips.begin(), ips.end(), [](const std::string &ip) {
         return ip == "127.0.0.1";
     }));
 
-    const auto google = client_socket_t::hostname_to_ip("google.com", EIpType::IPv4);
+    const auto google = CClientSocket::hostname_to_ip("google.com", EIpType::IPv4);
     EXPECT_FALSE(google.empty());
     EXPECT_TRUE(std::none_of(google.begin(), google.end(), [](const std::string &ip) {
         return ip == "127.0.0.1";
     }));
 
-    const auto nums = client_socket_t::hostname_to_ip("127.0.0.1", EIpType::IPv4);
+    const auto nums = CClientSocket::hostname_to_ip("127.0.0.1", EIpType::IPv4);
     EXPECT_EQ(nums.size(), 1u);
     EXPECT_TRUE(std::any_of(nums.begin(), nums.end(), [](const std::string &ip) {
         return ip == "127.0.0.1";
     }));
 
-    const auto nums2 = client_socket_t::hostname_to_ip("1.1.1.1", EIpType::IPv4);
+    const auto nums2 = CClientSocket::hostname_to_ip("1.1.1.1", EIpType::IPv4);
     EXPECT_EQ(nums2.size(), 1u);
     EXPECT_TRUE(std::any_of(nums2.begin(), nums2.end(), [](const std::string &ip) {
         return ip == "1.1.1.1";
@@ -58,7 +58,7 @@ TEST_F(CSocketsTest, NameResolverTest)
 
 TEST_F(CSocketsTest, ClientConnectWriteRead)
 {
-    tcp_client_t client;
+    CTcpClientConnecction client;
     const auto status = client.connect("google.com", 80);
     EXPECT_EQ(status, EIoStatus::Ok);
 
@@ -81,7 +81,7 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
 
     // Server thread.
     auto serverThread = utility::startNewRunner([](const auto &interrupt_ptr) {
-        tcp_server_t server{kServerPort};
+        CTcpAcceptServer server{kServerPort};
         std::array<char, 1024u> tmp{0};
         while (!(*interrupt_ptr))
         {
@@ -108,7 +108,7 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
 
     // Client in the main thread.
     std::this_thread::sleep_for(250ms);
-    tcp_client_t client("localhost", kServerPort);
+    CTcpClientConnecction client("localhost", kServerPort);
     for (int i = 0; i < 2; ++i)
     {
         client.connect();

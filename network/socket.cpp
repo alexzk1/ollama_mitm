@@ -16,8 +16,7 @@
 #include "socket.hpp" // IWYU pragma: keep
 
 #include <common/runners.h> // IWYU pragma: keep
-
-#include <memory.h> // NOLINT
+#include <memory.h>         // NOLINT
 #include <poll.h>
 #include <string.h> // NOLINT
 #include <unistd.h>
@@ -140,35 +139,35 @@ socketfd_t CManagedFd::get() const noexcept
 }
 
 // NOLINTNEXTLINE
-client_socket_t::client_socket_t() noexcept
+CClientSocket::CClientSocket() noexcept
 {
     close();
 }
 
-client_socket_t::client_socket_t(CManagedFd sockfd, sockaddr_in sock_addr) noexcept :
+CClientSocket::CClientSocket(CManagedFd sockfd, sockaddr_in sock_addr) noexcept :
     m_sockfd(std::move(sockfd)),
     m_sockaddr_in(sock_addr)
 {
 }
 
-client_socket_t::~client_socket_t() noexcept
+CClientSocket::~CClientSocket() noexcept
 {
     close();
 }
 
-void client_socket_t::close() noexcept
+void CClientSocket::close() noexcept
 {
     m_sockfd = CManagedFd();
     memset(&m_sockaddr_in, 0, sizeof(m_sockaddr_in));
 }
 
-client_socket_t::Result client_socket_t::write(const std::string &what) const
+CClientSocket::Result CClientSocket::write(const std::string &what) const
 {
     return write_all(what.c_str(), what.length());
 }
 
-client_socket_t::Result client_socket_t::write_all(const void *_buf,
-                                                   std::size_t size_buf) const noexcept
+CClientSocket::Result CClientSocket::write_all(const void *_buf,
+                                               std::size_t size_buf) const noexcept
 {
     //::send
     // http://man7.org/linux/man-pages/man2/send.2.html
@@ -196,7 +195,7 @@ client_socket_t::Result client_socket_t::write_all(const void *_buf,
     return {res, size_left};
 }
 
-client_socket_t::Result client_socket_t::read_all(void *_buf, std::size_t size_buf) const noexcept
+CClientSocket::Result CClientSocket::read_all(void *_buf, std::size_t size_buf) const noexcept
 {
     // http://man7.org/linux/man-pages/man2/recv.2.html
     // The recv(), recvfrom(), and recvmsg() calls are used to receive
@@ -230,8 +229,8 @@ client_socket_t::Result client_socket_t::read_all(void *_buf, std::size_t size_b
     return {res, total_recv_size};
 }
 
-std::list<std::string> client_socket_t::hostname_to_ip(const char *host_name,
-                                                       const EIpType type) noexcept
+std::list<std::string> CClientSocket::hostname_to_ip(const char *host_name,
+                                                     const EIpType type) noexcept
 {
     // The getaddrinfo function provides protocol-independent translation from an ANSI host name
     // to an address.
@@ -288,7 +287,7 @@ std::list<std::string> client_socket_t::hostname_to_ip(const char *host_name,
     return result;
 }
 
-tcp_server_t::tcp_server_t(const uint16_t server_port) :
+CTcpAcceptServer::CTcpAcceptServer(const uint16_t server_port) :
     listenFd{::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)}
 {
     if (!listenFd)
@@ -326,7 +325,7 @@ tcp_server_t::tcp_server_t(const uint16_t server_port) :
     }
 }
 
-client_socket_t tcp_server_t::accept()
+CClientSocket CTcpAcceptServer::accept()
 {
     sockaddr_in addr_client{}; // client address
     addr_len_t len_addr = sizeof(addr_client);
@@ -341,7 +340,7 @@ client_socket_t tcp_server_t::accept()
     return {};
 }
 
-client_socket_t tcp_server_t::accept_autoclose(const utility::runnerint_t &is_interrupted_ptr)
+CClientSocket CTcpAcceptServer::accept_autoclose(const utility::runnerint_t &is_interrupted_ptr)
 {
     sockaddr_in addr_client{}; // client address
     addr_len_t len_addr = sizeof(addr_client);
@@ -374,21 +373,21 @@ client_socket_t tcp_server_t::accept_autoclose(const utility::runnerint_t &is_in
     return {};
 }
 
-tcp_client_t::tcp_client_t(const char *host_name, const std::uint16_t server_port) :
+CTcpClientConnecction::CTcpClientConnecction(const char *host_name, const std::uint16_t server_port) :
     m_server_port(server_port),
-    m_server_ip(client_socket_t::hostname_to_ip(host_name, EIpType::IPv4))
+    m_server_ip(CClientSocket::hostname_to_ip(host_name, EIpType::IPv4))
 {
 }
 
-EIoStatus tcp_client_t::connect(const char *host_name, const uint16_t server_port)
+EIoStatus CTcpClientConnecction::connect(const char *host_name, const uint16_t server_port)
 {
     // I'm not sure if existing design will work for IPv6, so let it be fixed V4.
-    m_server_ip = client_socket_t::hostname_to_ip(host_name, EIpType::IPv4);
+    m_server_ip = CClientSocket::hostname_to_ip(host_name, EIpType::IPv4);
     m_server_port = server_port;
     return connect();
 }
 
-EIoStatus tcp_client_t::connect() noexcept
+EIoStatus CTcpClientConnecction::connect() noexcept
 {
     disconnect();
     // create a stream socket using TCP
@@ -425,7 +424,7 @@ EIoStatus tcp_client_t::connect() noexcept
     return EIoStatus::Error;
 }
 
-void tcp_client_t::disconnect() noexcept
+void CTcpClientConnecction::disconnect() noexcept
 {
     m_client_socket.close();
 }
