@@ -98,11 +98,11 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
             const std::string response{tmp.begin(), tmp.begin() + readLen};
             EXPECT_TRUE(response.find(kGet) != std::string::npos);
 
-            std::this_thread::sleep_for(25ms);
+            std::this_thread::sleep_for(25ms); // NOLINT
             const auto [writeCode, remainingToWriteLen] = client_socket.write(kOk);
             ASSERT_EQ(writeCode, EIoStatus::Ok);
             ASSERT_EQ(remainingToWriteLen, 0u);
-            std::this_thread::sleep_for(50ms);
+            std::this_thread::sleep_for(50ms); // NOLINT
         }
     });
 
@@ -112,12 +112,12 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
     for (int i = 0; i < 2; ++i)
     {
         client.connect();
-        std::this_thread::sleep_for(50ms);
+        std::this_thread::sleep_for(50ms); // NOLINT
         const auto [write_code, remainingToWriteLen] = client.socket().write(kGet);
         ASSERT_EQ(write_code, EIoStatus::Ok);
         ASSERT_EQ(remainingToWriteLen, 0u);
 
-        std::this_thread::sleep_for(77ms);
+        std::this_thread::sleep_for(77ms); // NOLINT
         std::array<char, 102'400u> tmp{0};
         const auto [readCode, readLen] =
           client.socket().read_all(tmp.data(), std::min(tmp.size(), kOk.size()));
@@ -125,7 +125,7 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
         ASSERT_EQ(readLen, kOk.size());
         EXPECT_EQ(std::string(tmp.begin(), tmp.begin() + readLen), kOk);
         client.disconnect();
-        std::this_thread::sleep_for(333ms);
+        std::this_thread::sleep_for(333ms); // NOLINT
     }
     serverThread.reset();
 
