@@ -60,14 +60,14 @@ TEST_F(CSocketsTest, ClientConnectWriteRead)
 {
     CTcpClientConnecction client;
     const auto status = client.connect("google.com", 80);
-    EXPECT_EQ(status, EIoStatus::Ok);
+    EXPECT_NE(status, EIoStatus::Error);
 
     const auto [write_code, wrtie_len] = client.socket().write("GET /\n");
-    ASSERT_EQ(write_code, EIoStatus::Ok);
+    ASSERT_NE(write_code, EIoStatus::Error);
 
     std::array<char, 102'400u> tmp{0};
     const auto [readCode, readLen] = client.socket().read_all(tmp.data(), tmp.size());
-    EXPECT_EQ(readCode, EIoStatus::Ok);
+    EXPECT_NE(readCode, EIoStatus::Error);
     ASSERT_GT(readLen, 0);
 
     const std::string response{tmp.begin(), tmp.begin() + readLen};
@@ -92,7 +92,7 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
             }
             const auto [readCode, readLen] =
               client_socket.read_all(tmp.data(), std::min(tmp.size(), kGet.size()));
-            ASSERT_EQ(readCode, EIoStatus::Ok);
+            ASSERT_NE(readCode, EIoStatus::Error);
             ASSERT_EQ(readLen, kGet.size());
 
             const std::string response{tmp.begin(), tmp.begin() + readLen};
@@ -100,7 +100,7 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
 
             std::this_thread::sleep_for(25ms); // NOLINT
             const auto [writeCode, remainingToWriteLen] = client_socket.write(kOk);
-            ASSERT_EQ(writeCode, EIoStatus::Ok);
+            ASSERT_NE(writeCode, EIoStatus::Error);
             ASSERT_EQ(remainingToWriteLen, 0u);
             std::this_thread::sleep_for(50ms); // NOLINT
         }
@@ -121,7 +121,7 @@ TEST_F(CSocketsTest, ServerAcceptsAndCommunicatesWithClient)
         std::array<char, 102'400u> tmp{0};
         const auto [readCode, readLen] =
           client.socket().read_all(tmp.data(), std::min(tmp.size(), kOk.size()));
-        EXPECT_EQ(readCode, EIoStatus::Ok);
+        EXPECT_NE(readCode, EIoStatus::Error);
         ASSERT_EQ(readLen, kOk.size());
         EXPECT_EQ(std::string(tmp.begin(), tmp.begin() + readLen), kOk);
         client.disconnect();

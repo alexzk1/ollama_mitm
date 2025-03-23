@@ -109,6 +109,7 @@ inline int close(const CManagedFd &)
 ///@brief Status of the IO operation.
 enum class EIoStatus : std::uint8_t {
     Ok,
+    OkReceivedZero,
     Error,
 };
 

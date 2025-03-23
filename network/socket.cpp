@@ -220,6 +220,7 @@ CClientSocket::Result CClientSocket::read_all(void *_buf, std::size_t size_buf) 
         // everything received, exit
         if (0 == recv_size)
         {
+            res = EIoStatus::OkReceivedZero;
             break;
         }
         size_left -= recv_size;
@@ -373,7 +374,8 @@ CClientSocket CTcpAcceptServer::accept_autoclose(const utility::runnerint_t &is_
     return {};
 }
 
-CTcpClientConnecction::CTcpClientConnecction(const char *host_name, const std::uint16_t server_port) :
+CTcpClientConnecction::CTcpClientConnecction(const char *host_name,
+                                             const std::uint16_t server_port) :
     m_server_port(server_port),
     m_server_ip(CClientSocket::hostname_to_ip(host_name, EIpType::IPv4))
 {
