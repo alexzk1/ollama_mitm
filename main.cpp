@@ -1,3 +1,5 @@
+#include <ollama/ollama.hpp>
+
 #include <iostream>
 
 using namespace std;
