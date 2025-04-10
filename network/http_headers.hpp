@@ -36,13 +36,13 @@ inline void HttpTrim(std::string &str)
 } // namespace utility
 
 /// @brief Represents 1st line of the HTTP request.
-class HttpRequestLine
+class CHttpRequestLine
 {
   public:
-    HttpRequestLine() = default;
+    CHttpRequestLine() = default;
 
     /// @brief Construct object out of separated fields of request line.
-    HttpRequestLine(std::string method, std::string path, std::string version) :
+    CHttpRequestLine(std::string method, std::string path, std::string version) :
         iMethod(std::move(method)),
         iPath(std::move(path)),
         iVersion(std::move(version))
@@ -51,12 +51,12 @@ class HttpRequestLine
         utility::HttpTrim(iPath);
         utility::HttpTrim(iVersion);
     }
-    ~HttpRequestLine() = default;
-    DEFAULT_COPYMOVE(HttpRequestLine);
+    ~CHttpRequestLine() = default;
+    DEFAULT_COPYMOVE(CHttpRequestLine);
 
     /// @brief Constructs object out of a string formatted as "Method Path Version" (e.g., GET
     /// /index.html HTTP/1.1)
-    explicit HttpRequestLine(const std::string &request_line)
+    explicit CHttpRequestLine(const std::string &request_line)
     {
         std::istringstream stream(request_line);
         stream >> iMethod >> iPath >> iVersion;
@@ -65,7 +65,7 @@ class HttpRequestLine
         utility::HttpTrim(iVersion);
     }
 
-    /// @brief Converts HttpRequestLine to string
+    /// @brief Converts CHttpRequestLine to string
     /// @return std::string formatted as "Method Path Version" usable in http response.
     [[nodiscard]]
     std::string ToString() const
@@ -80,9 +80,9 @@ class HttpRequestLine
         return !iMethod.empty() && !iPath.empty() && !iVersion.empty();
     }
 
-    bool operator==(const HttpRequestLine &other) const
+    bool operator==(const CHttpRequestLine &other) const
     {
-        const auto tie = [](const HttpRequestLine &what) {
+        const auto tie = [](const CHttpRequestLine &what) {
             return std::tie(what.iMethod, what.iPath, what.iVersion);
         };
         return tie(*this) == tie(other);
@@ -112,11 +112,11 @@ class HttpRequestLine
 };
 
 /// @brief Represents 1st line of the HTTP response.
-class HttpResponseLine
+class CHttpResponseLine
 {
   public:
     /// @brief Constructs object out of separated fields.
-    explicit HttpResponseLine(std::string version, int status_code, std::string status_text) :
+    explicit CHttpResponseLine(std::string version, int status_code, std::string status_text) :
         iVersion(std::move(version)),
         iStatusCode(status_code),
         iStatusText(std::move(status_text))
@@ -125,11 +125,11 @@ class HttpResponseLine
         utility::HttpTrim(iStatusText);
     }
 
-    ~HttpResponseLine() = default;
-    DEFAULT_COPYMOVE(HttpResponseLine);
+    ~CHttpResponseLine() = default;
+    DEFAULT_COPYMOVE(CHttpResponseLine);
 
     /// @brief Constructs object out of a string formatted as "Version Status Code Status Text"
-    explicit HttpResponseLine(const std::string &response_line)
+    explicit CHttpResponseLine(const std::string &response_line)
     {
         std::istringstream stream(response_line);
         stream >> iVersion >> iStatusCode;
@@ -159,9 +159,9 @@ class HttpResponseLine
         return iStatusCode >= 100 && iStatusCode <= 599;
     }
 
-    bool operator==(const HttpResponseLine &other) const
+    bool operator==(const CHttpResponseLine &other) const
     {
-        const auto tie = [](const HttpResponseLine &what) {
+        const auto tie = [](const CHttpResponseLine &what) {
             return std::tie(what.iStatusCode, what.iVersion, what.iStatusText);
         };
         return tie(*this) == tie(other);
@@ -194,17 +194,17 @@ class HttpResponseLine
 
 /// @brief Represents header part of the http request or response with 1st line (everything before
 /// the body).
-class HttpHeaders
+class CHttpHeaders
 {
   public:
-    using TFirstLine = std::variant<std::monostate, HttpRequestLine, HttpResponseLine>;
+    using TFirstLine = std::variant<std::monostate, CHttpRequestLine, CHttpResponseLine>;
 
-    HttpHeaders() = default;
-    ~HttpHeaders() = default;
-    DEFAULT_COPYMOVE(HttpHeaders);
+    CHttpHeaders() = default;
+    ~CHttpHeaders() = default;
+    DEFAULT_COPYMOVE(CHttpHeaders);
 
     /// @brief Constructs the object and calls @fn ParseAndAdd(@p header_str).
-    explicit HttpHeaders(const std::string &header_str)
+    explicit CHttpHeaders(const std::string &header_str)
     {
         ParseAndAdd(header_str);
     }
@@ -249,7 +249,8 @@ class HttpHeaders
         }
     }
 
-    /// @returns the string usable to write to response made of internal state.
+    /// @returns the string usable to write to response made of internal state (including ending
+    /// \r\n).
     std::string ToString() const
     {
         static constexpr std::string_view kEnd = "\r\n";
@@ -304,7 +305,7 @@ class HttpHeaders
 
         if (firsrWord.find("HTTP/") == 0)
         {
-            return HttpResponseLine(line);
+            return CHttpResponseLine(line);
         }
 
         const bool isRequest =
@@ -313,7 +314,7 @@ class HttpHeaders
           });
         if (isRequest)
         {
-            return HttpRequestLine(line);
+            return CHttpRequestLine(line);
         }
 
         throw std::invalid_argument("Invalid HTTP first line.");
@@ -323,7 +324,7 @@ class HttpHeaders
     bool IsRequest() const
     {
         const auto visitor = LambdaVisitor{
-          [](const HttpRequestLine &) {
+          [](const CHttpRequestLine &) {
               return true;
           },
           [](const auto &) {
@@ -337,7 +338,7 @@ class HttpHeaders
     bool IsResponse() const
     {
         const auto visitor = LambdaVisitor{
-          [](const HttpResponseLine &) {
+          [](const CHttpResponseLine &) {
               return true;
           },
           [](const auto &) {
@@ -347,9 +348,9 @@ class HttpHeaders
         return std::visit(visitor, iFirstRequestLine);
     }
 
-    bool operator==(const HttpHeaders &other) const
+    bool operator==(const CHttpHeaders &other) const
     {
-        const auto tie = [](const HttpHeaders &what) {
+        const auto tie = [](const CHttpHeaders &what) {
             return std::tie(what.iFirstRequestLine, what.iHeaders);
         };
         return tie(*this) == tie(other);

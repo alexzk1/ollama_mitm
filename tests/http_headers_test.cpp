@@ -18,10 +18,10 @@ class HttpHeadersTest : public ::testing::Test
         return str;
     }
 
-    static bool IsRequest(const HttpHeaders::TFirstLine &firstLine)
+    static bool IsRequest(const CHttpHeaders::TFirstLine &firstLine)
     {
         const auto visitor = LambdaVisitor{
-          [](const HttpRequestLine &) {
+          [](const CHttpRequestLine &) {
               return true;
           },
           [](const auto &) {
@@ -31,10 +31,10 @@ class HttpHeadersTest : public ::testing::Test
         return std::visit(visitor, firstLine);
     }
 
-    static bool IsResponse(const HttpHeaders::TFirstLine &firstLine)
+    static bool IsResponse(const CHttpHeaders::TFirstLine &firstLine)
     {
         const auto visitor = LambdaVisitor{
-          [](const HttpResponseLine &) {
+          [](const CHttpResponseLine &) {
               return true;
           },
           [](const auto &) {
@@ -72,7 +72,7 @@ TEST_F(HttpHeadersTest, HttpRequestLineIsParsed)
     };
     for (const auto &t : test)
     {
-        const HttpRequestLine line(t);
+        const CHttpRequestLine line(t);
         auto prev = 0u;
         auto next = t.find(' ', prev);
         EXPECT_EQ(line.GetMethod(), trim(t.substr(prev, next - prev)));
@@ -95,7 +95,7 @@ TEST_F(HttpHeadersTest, HttpResponseLineParsed)
     };
     for (const auto &t : test)
     {
-        const HttpResponseLine line(t);
+        const CHttpResponseLine line(t);
         auto prev = 0u;
         auto next = t.find(' ', prev);
         EXPECT_EQ(line.GetVersion(), trim(t.substr(prev, next - prev)));
@@ -116,7 +116,7 @@ TEST_F(HttpHeadersTest, ParseFirstLineDetectsResponse)
     };
     for (const auto &t : test)
     {
-        auto firstLine = HttpHeaders::ParseFirstLine(t);
+        auto firstLine = CHttpHeaders::ParseFirstLine(t);
         EXPECT_EQ(IsResponse(firstLine), t.find("HTTP/") == 0);
     }
 }
@@ -130,7 +130,7 @@ TEST_F(HttpHeadersTest, ParseFirstLineDetectsRequest)
     };
     for (const auto &t : test)
     {
-        auto firstLine = HttpHeaders::ParseFirstLine(t);
+        auto firstLine = CHttpHeaders::ParseFirstLine(t);
         EXPECT_NE(IsRequest(firstLine), t.find("HTTP/") == 0);
     }
 }
@@ -144,7 +144,7 @@ TEST_F(HttpHeadersTest, ParseFirstLineThrowsInvalidFirstLine)
     };
     for (const auto &t : test)
     {
-        EXPECT_THROW(HttpHeaders::ParseFirstLine(t), std::invalid_argument);
+        EXPECT_THROW(CHttpHeaders::ParseFirstLine(t), std::invalid_argument);
     }
 }
 
@@ -153,13 +153,13 @@ TEST_F(HttpHeadersTest, HeadersInRequestAreProperlyParsed)
     static const std::string headerString =
       "GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: "
       "curl/7.64.1\r\nInvalidHdrLine\r\t\r\nAccept: */*\r\n\r\nAndGotSomeBodyToo";
-    const HttpHeaders headers(headerString);
+    const CHttpHeaders headers(headerString);
 
     const auto checkFirstLine = LambdaVisitor{
       [](auto &&) {
           ASSERT_TRUE(false) << "Headers were parsed to the wrong type.";
       },
-      [](const HttpRequestLine &firstLine) {
+      [](const CHttpRequestLine &firstLine) {
           EXPECT_EQ(firstLine.GetMethod(), "GET");
           EXPECT_EQ(firstLine.GetPath(), "/");
           EXPECT_EQ(firstLine.GetVersion(), "HTTP/1.1");
@@ -175,7 +175,7 @@ TEST_F(HttpHeadersTest, HeadersInRequestAreProperlyParsed)
     EXPECT_EQ(headers.Value("accept"), "*/*");
     EXPECT_TRUE(headers.Value("InvalidHdrLine").empty());
 
-    const HttpHeaders headers2(headers.ToString());
+    const CHttpHeaders headers2(headers.ToString());
     EXPECT_EQ(headers2, headers);
 }
 
@@ -184,13 +184,13 @@ TEST_F(HttpHeadersTest, HeadersInResponseAreProperlyParsed)
     static const std::string headerString =
       "HTTP/1.1 200 OK And some long text\t  \r\nContent-Type: "
       "application/json\r\nInvalidHdrLine\nContent-Length: 42\r\n\r\nAndGotSomeBodyToo";
-    const HttpHeaders headers(headerString);
+    const CHttpHeaders headers(headerString);
 
     const auto checkFirstLine = LambdaVisitor{
       [](auto &&) {
           ASSERT_TRUE(false) << "Headers were parsed to the wrong type.";
       },
-      [](const HttpResponseLine &firstLine) {
+      [](const CHttpResponseLine &firstLine) {
           EXPECT_EQ(firstLine.GetVersion(), "HTTP/1.1");
           EXPECT_EQ(firstLine.GetStatusCode(), 200);
           EXPECT_EQ(firstLine.GetStatusText(), "OK And some long text");
@@ -204,7 +204,7 @@ TEST_F(HttpHeadersTest, HeadersInResponseAreProperlyParsed)
     EXPECT_EQ(headers.Value("content-length"), "42");
     EXPECT_TRUE(headers.Value("InvalidHdrLine").empty());
 
-    const HttpHeaders headers2(headers.ToString());
+    const CHttpHeaders headers2(headers.ToString());
     EXPECT_EQ(headers2, headers);
 }
 

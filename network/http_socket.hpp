@@ -16,5 +16,5 @@ class CHttpSocket
 
   private:
     CClientSocket iSocket;
-    HttpHeaders iHeaders;
+    CHttpHeaders iHeaders;
 };
