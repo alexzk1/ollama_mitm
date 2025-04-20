@@ -1,5 +1,6 @@
 #include "chunkedcontentprovider.hpp" // IWYU pragma: keep
 
+#include <network/contentrestorator.hpp>
 #include <network/ollama_proxy_config.hpp>
 #include <ollama/httplib.h>
 #include <ollama/json.hpp>
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -55,13 +57,20 @@ ollama::request CreateChatRequest(const nlohmann::json &userJson)
 void WriteToSink(httplib::DataSink &sink, const std::string &what)
 {
     // TODO: here can be different encoding so length in bytes would be different.
-    sink.write(what.c_str(), what.size());
+    if (!what.empty())
+    {
+        sink.write(what.c_str(), what.size());
+    }
 }
 
 void WriteToSink(httplib::DataSink &sink, const ollama::response &ollamaResponse)
 {
     WriteToSink(sink, ollamaResponse.as_json_string());
 }
+
+const TAssistWords kOllamaKeywords = {
+  "AI_GET_URL",
+};
 
 } // namespace
 
@@ -103,8 +112,8 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
             });
             return false;
         }
-
-        const auto ollamaResponseHandler = [&sink,
+        auto commandDetector = std::make_shared<CContentRestorator>(kOllamaKeywords);
+        const auto ollamaResponseHandler = [&sink, commandDetector = std::move(commandDetector),
                                             this](const ollama::response &ollamaResponse) -> bool {
             // We should return true/false from callback to ollama server, AND stop sink if
             // we're done, otherwise client will keep repeating.
@@ -133,6 +142,13 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
                       });
                     return tellUserDone();
                 }
+
+                // commandDetector->Update(ollamaResponse);
+                // const auto detectedState = commandDetector->Detect(kTestString);
+                // if (detectedState == ECommandDetectionState::SureAbsent)
+                // {
+
+                // }
 
                 WriteToSink(sink, ollamaResponse);
                 constexpr auto kDoneKey = "done";
