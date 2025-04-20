@@ -107,6 +107,7 @@ if (TESTS_LIST_FILES_COUNT GREATER 0)
                    ${TESTS_LIST} ${TO_TEST_FILES}
     )
     target_link_libraries(ollama_mitm_tests PRIVATE
+                        ollama-hpp
                         gtest
                         gmock
     )
