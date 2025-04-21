@@ -1,5 +1,6 @@
 #include "chunkedcontentprovider.hpp" // IWYU pragma: keep
 
+#include <common/lambda_visitors.h>
 #include <network/contentrestorator.hpp>
 #include <network/ollama_proxy_config.hpp>
 #include <ollama/httplib.h>
@@ -8,12 +9,15 @@
 
 #include <cstddef>
 #include <exception>
+#include <initializer_list>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace {
 
@@ -68,9 +72,7 @@ void WriteToSink(httplib::DataSink &sink, const ollama::response &ollamaResponse
     WriteToSink(sink, ollamaResponse.as_json_string());
 }
 
-const TAssistWords kOllamaKeywords = {
-  "AI_GET_URL",
-};
+constexpr std::initializer_list<std::string_view> kOllamaKeywords{"AI_GET_URL"};
 
 } // namespace
 
@@ -117,21 +119,50 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
                                             this](const ollama::response &ollamaResponse) -> bool {
             // We should return true/false from callback to ollama server, AND stop sink if
             // we're done, otherwise client will keep repeating.
-            const auto tellUserDone = [&sink](bool keepChatWithOllama = false) {
-                if (!keepChatWithOllama)
-                {
-                    sink.done();
-                }
-                return keepChatWithOllama;
+            const auto respondToUserAndOllama =
+              [&sink](CContentRestorator::EReadingBehahve status) {
+                  switch (status)
+                  {
+                      case CContentRestorator::EReadingBehahve::OllamaHasMore:
+                          return true; // Keep talking to Ollama.
+                      case CContentRestorator::EReadingBehahve::CommunicationFailure:
+                          [[fallthrough]];
+                      case CContentRestorator::EReadingBehahve::OllamaSentAll:
+                          sink.done(); // Close user's connection.
+                          break;
+                  }
+                  return false; // Finish talks to Ollama.
+              };
+
+            const auto writeAsJson = [&](const std::string &plain) {
+                auto jobj = ollamaResponse.as_json();
+                jobj["message"]["content"] = plain;
+                WriteToSink(sink, ollama::response(jobj.dump(), ollama::message_type::chat));
             };
+
             try
             {
-                const auto &jsonObj = ollamaResponse.as_json();
+                // Debug logging.
                 proxyConfig.get().ExecIfFittingVerbosity(
-                  EOllamaProxyVerbosity::Debug, [&jsonObj](auto &os) {
-                      os << "[DEBUG] Response from OLLAMA: \n" << jsonObj << std::endl;
+                  EOllamaProxyVerbosity::Debug, [&ollamaResponse](auto &os) {
+                      os << "[DEBUG] Response from OLLAMA: \n"
+                         << ollamaResponse.as_json() << std::endl;
                   });
 
+                const auto [status, decision] = commandDetector->Update(ollamaResponse);
+                if (status == CContentRestorator::EReadingBehahve::CommunicationFailure)
+                {
+                    proxyConfig.get().ExecIfFittingVerbosity(
+                      EOllamaProxyVerbosity::Warning, [&ollamaResponse](auto &os) {
+                          os
+                            << "[WARNING] Response from ollama does not have boolean 'done' field. "
+                               "Stopping communications."
+                            << ollamaResponse.as_json() << std::endl;
+                      });
+                    return respondToUserAndOllama(status);
+                }
+
+                // Cannot write to user, drop both.
                 if (!sink.is_writable())
                 {
                     proxyConfig.get().ExecIfFittingVerbosity(
@@ -140,31 +171,41 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
                                 "from Ollama yet."
                              << std::endl;
                       });
-                    return tellUserDone();
+                    return respondToUserAndOllama(
+                      CContentRestorator::EReadingBehahve::CommunicationFailure);
                 }
 
-                // commandDetector->Update(ollamaResponse);
-                // const auto detectedState = commandDetector->Detect(kTestString);
-                // if (detectedState == ECommandDetectionState::SureAbsent)
-                // {
-
-                // }
-
-                WriteToSink(sink, ollamaResponse);
-                constexpr auto kDoneKey = "done";
-
-                if (!jsonObj.contains(kDoneKey) || !jsonObj[kDoneKey].is_boolean())
+                const LambdaVisitor visitor{
+                  [&](const CContentRestorator::TAlreadyDetected &) {
+                      WriteToSink(sink, ollamaResponse);
+                      return true;
+                  },
+                  [&](const CContentRestorator::TNeedMoreData &data) {
+                      if (data.status == CContentRestorator::EReadingBehahve::OllamaSentAll)
+                      {
+                          writeAsJson(data.currentlyCollectedString);
+                      }
+                      return true;
+                  },
+                  [&](const CContentRestorator::TPassToUser &pass) {
+                      writeAsJson(pass.collectedString);
+                      return true;
+                  },
+                  [&](const CContentRestorator::TDetected &) {
+                      // Here we have full ollama's response (request by model) to do something,
+                      // It must not be sent to user. It must be served, and sent as new request to
+                      // ollama than repeat whole ollamaResponseHandler () again.
+                      throw std::runtime_error("TODO: not implemented.");
+                      return false;
+                  },
+                };
+                if (std::visit(visitor, decision))
                 {
-                    proxyConfig.get().ExecIfFittingVerbosity(
-                      EOllamaProxyVerbosity::Warning, [&jsonObj](auto &os) {
-                          os
-                            << "[WARNING] Response from ollama does not have boolean 'done' field. "
-                               "Stopping communications."
-                            << jsonObj << std::endl;
-                      });
-                    return tellUserDone();
+                    return respondToUserAndOllama(status);
                 }
-                return tellUserDone(!jsonObj[kDoneKey]);
+                // We get here by CContentRestorator::TDetected, which means we close this channel
+                // to Ollama, but we keep channel to the user.
+                return false;
             }
             catch (std::exception &e)
             {
@@ -174,7 +215,8 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
                          << std::endl;
                   });
             }
-            return tellUserDone(false); // Stop streaming to user.
+            return respondToUserAndOllama(
+              CContentRestorator::EReadingBehahve::CommunicationFailure);
         }; // ollamaResponseHandler[]()
 
         auto request = CreateChatRequest(parsedUserJson);

@@ -8,7 +8,6 @@
 #include <string>
 #include <string_view>
 #include <variant>
-#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -17,15 +16,18 @@ namespace Testing {
 class ContentRestoratorTest : public ::testing::Test
 {
   public:
-    inline static const std::vector<std::string_view> toFind = {"_A", "_BB", "_CCC"};
+    inline static constexpr TAssistWords toFind = {"_A", "_BB", "_CCC"};
 
-    inline static const std::string jsonCommon = R"({"message": { "content": "Hello, world!" } })";
-    inline static const std::string jsonCommon2 = R"({"message": { "content": "1" } })";
+    inline static const std::string jsonCommon =
+      R"({"done": false, "message": { "content": "Hello, world!" } })";
+    inline static const std::string jsonCommon2 =
+      R"({"done": false, "message": { "content": "1" } })";
 
-    inline static const std::string jsonA = R"({"message": { "content": "_A" } })";
-    inline static const std::string jsonB = R"({"message": { "content": "_BB" } })";
-    inline static const std::string jsonC1 = R"({"message": { "content": "_CC" } })";
-    inline static const std::string jsonC2 = R"({"message": { "content": "C23" } })";
+    inline static const std::string jsonA = R"({"done": true, "message": { "content": "_A" } })";
+    inline static const std::string jsonB = R"({"done": true, "message": { "content": "_BB" } })";
+    inline static const std::string jsonC1 = R"({"done": false, "message": { "content": "_CC" } })";
+    inline static const std::string jsonC2 = R"({"done": true, "message": { "content": "C23" } })";
+    inline static const std::string jsonC3 = R"({"done": false, "message": { "content": "C23" } })";
 
     static ollama::response BuildChatResponse(const std::string &json_string)
     {
@@ -54,7 +56,7 @@ class ContentRestoratorTest : public ::testing::Test
 TEST_F(ContentRestoratorTest, TestNotFoundWithBigChunk)
 {
     CContentRestorator restorer(toFind);
-    const auto decision = restorer.Update(BuildChatResponse(jsonCommon));
+    const auto [status, decision] = restorer.Update(BuildChatResponse(jsonCommon));
 
     const LambdaVisitor visitor{[](const CContentRestorator::TPassToUser &) {
                                 },
@@ -62,12 +64,13 @@ TEST_F(ContentRestoratorTest, TestNotFoundWithBigChunk)
                                     ADD_FAILURE();
                                 }};
     std::visit(visitor, decision);
+    EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
 }
 
 TEST_F(ContentRestoratorTest, TestNeedMoreDataWithSmallChunk)
 {
     CContentRestorator restorer(toFind);
-    const auto decision = restorer.Update(BuildChatResponse(jsonCommon2));
+    const auto [status, decision] = restorer.Update(BuildChatResponse(jsonCommon2));
 
     const LambdaVisitor visitor{[](const CContentRestorator::TNeedMoreData &) {
                                 },
@@ -75,6 +78,7 @@ TEST_F(ContentRestoratorTest, TestNeedMoreDataWithSmallChunk)
                                     ADD_FAILURE();
                                 }};
     std::visit(visitor, decision);
+    EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
 }
 
 TEST_F(ContentRestoratorTest, TestWithNotMatchingSmallChunk)
@@ -84,7 +88,7 @@ TEST_F(ContentRestoratorTest, TestWithNotMatchingSmallChunk)
 
     for (std::size_t i = 1; i < kMaxToFindLen * 2; ++i)
     {
-        const auto decision = restorer.Update(BuildChatResponse(jsonCommon2));
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonCommon2));
         const LambdaVisitor visitor{[&i](const CContentRestorator::TNeedMoreData &) {
                                         EXPECT_LT(i, kMaxToFindLen);
                                     },
@@ -96,17 +100,45 @@ TEST_F(ContentRestoratorTest, TestWithNotMatchingSmallChunk)
                                     [&i](const CContentRestorator::TAlreadyDetected &) {
                                         EXPECT_GT(i, kMaxToFindLen);
                                     },
-                                    [](const auto &) {
+                                    [](const CContentRestorator::TDetected &) {
                                         ADD_FAILURE();
                                     }};
         std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
+    }
+}
+
+TEST_F(ContentRestoratorTest, TestWithSingleWord)
+{
+    static const TAssistWords kOllamaKeywords = {"AI_GET_URL"};
+    static const auto sz = kOllamaKeywords.begin()->size();
+    CContentRestorator restorer(kOllamaKeywords);
+
+    for (std::size_t i = 1; i < sz * 2; ++i)
+    {
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonCommon2));
+        const LambdaVisitor visitor{[&i](const CContentRestorator::TNeedMoreData &) {
+                                        EXPECT_LT(i, sz);
+                                    },
+                                    [&i](const CContentRestorator::TPassToUser &pass) {
+                                        EXPECT_EQ(i, sz);
+                                        EXPECT_EQ(pass.collectedString, std::string(sz, '1'));
+                                    },
+                                    [&i](const CContentRestorator::TAlreadyDetected &) {
+                                        EXPECT_GT(i, sz);
+                                    },
+                                    [](const CContentRestorator::TDetected &) {
+                                        ADD_FAILURE();
+                                    }};
+        std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
     }
 }
 
 TEST_F(ContentRestoratorTest, TestExactDetectionA)
 {
     CContentRestorator restorer(toFind);
-    const auto decision = restorer.Update(BuildChatResponse(jsonA));
+    const auto [status, decision] = restorer.Update(BuildChatResponse(jsonA));
 
     const LambdaVisitor visitor{[](const CContentRestorator::TDetected &det) {
                                     EXPECT_EQ(det.whatDetected, ExpectedContent(jsonA));
@@ -116,12 +148,13 @@ TEST_F(ContentRestoratorTest, TestExactDetectionA)
                                     ADD_FAILURE();
                                 }};
     std::visit(visitor, decision);
+    EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaSentAll);
 }
 
 TEST_F(ContentRestoratorTest, TestExactDetectionB)
 {
     CContentRestorator restorer(toFind);
-    const auto decision = restorer.Update(BuildChatResponse(jsonB));
+    const auto [status, decision] = restorer.Update(BuildChatResponse(jsonB));
 
     const LambdaVisitor visitor{[](const CContentRestorator::TDetected &det) {
                                     EXPECT_EQ(det.whatDetected, ExpectedContent(jsonB));
@@ -131,6 +164,7 @@ TEST_F(ContentRestoratorTest, TestExactDetectionB)
                                     ADD_FAILURE();
                                 }};
     std::visit(visitor, decision);
+    EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaSentAll);
 }
 
 TEST_F(ContentRestoratorTest, TestSplitDetection)
@@ -138,33 +172,77 @@ TEST_F(ContentRestoratorTest, TestSplitDetection)
     CContentRestorator restorer(toFind);
     // "_CC" — not enough yet
     {
-        const auto decision = restorer.Update(BuildChatResponse(jsonC1));
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonC1));
         const LambdaVisitor visitor{[](const CContentRestorator::TNeedMoreData &) {
                                     },
                                     [](const auto &) {
                                         ADD_FAILURE();
                                     }};
         std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
     }
-    const auto decision = restorer.Update(BuildChatResponse(jsonC2)); // "C" → "_CCC"
+    {
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonC2)); // "C" → "_CCC"
+        const LambdaVisitor visitor{[](const CContentRestorator::TDetected &det) {
+                                        EXPECT_EQ(det.whatDetected, "_CCC");
+                                        EXPECT_EQ(det.collectedString, ExpectedContent(jsonC1)
+                                                                         + ExpectedContent(jsonC2));
+                                    },
+                                    [](const auto &) {
+                                        ADD_FAILURE();
+                                    }};
+        std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaSentAll);
+    }
+}
 
-    const LambdaVisitor visitor{[](const CContentRestorator::TDetected &det) {
-                                    EXPECT_EQ(det.whatDetected, "_CCC");
-                                    EXPECT_EQ(det.collectedString,
-                                              ExpectedContent(jsonC1) + ExpectedContent(jsonC2));
-                                },
-                                [](const auto &) {
-                                    ADD_FAILURE();
-                                }};
-    std::visit(visitor, decision);
+TEST_F(ContentRestoratorTest, TestSplitDetectionAndStopsWhenFullReceived)
+{
+    CContentRestorator restorer(toFind);
+    // "_CC" — not enough yet
+    {
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonC1));
+        const LambdaVisitor visitor{[](const CContentRestorator::TNeedMoreData &) {
+                                    },
+                                    [](const auto &) {
+                                        ADD_FAILURE();
+                                    }};
+        std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
+    }
+    {
+        // It should be recognized, buf "done" : false yet
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonC3));
+        const LambdaVisitor visitor{[](const CContentRestorator::TNeedMoreData &) {
+                                    },
+                                    [](const auto &) {
+                                        ADD_FAILURE();
+                                    }};
+        std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
+    }
+    {
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonB));
+        const LambdaVisitor visitor{[](const CContentRestorator::TDetected &det) {
+                                        EXPECT_EQ(det.whatDetected, "_CCC");
+                                        EXPECT_EQ(det.collectedString, ExpectedContent(jsonC1)
+                                                                         + ExpectedContent(jsonC3)
+                                                                         + ExpectedContent(jsonB));
+                                    },
+                                    [](const auto &) {
+                                        ADD_FAILURE();
+                                    }};
+        std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaSentAll);
+    }
 }
 
 TEST_F(ContentRestoratorTest, TestDetectionThenNewString)
 {
     CContentRestorator restorer(toFind);
 
-    const auto decision1 = restorer.Update(BuildChatResponse(jsonA));      // "_A"
-    const auto decision2 = restorer.Update(BuildChatResponse(jsonCommon)); // обычный текст
+    const auto [status1, decision1] = restorer.Update(BuildChatResponse(jsonA)); // "_A"
+    const auto [status2, decision2] = restorer.Update(BuildChatResponse(jsonCommon));
 
     const LambdaVisitor visitor1{[](const CContentRestorator::TDetected &det) {
                                      EXPECT_EQ(det.whatDetected, ExpectedContent(jsonA));
@@ -174,20 +252,21 @@ TEST_F(ContentRestoratorTest, TestDetectionThenNewString)
                                      ADD_FAILURE();
                                  }};
     std::visit(visitor1, decision1);
-
+    EXPECT_EQ(status1, CContentRestorator::EReadingBehahve::OllamaSentAll);
     const LambdaVisitor visitor2{[](const CContentRestorator::TAlreadyDetected &) {
                                  },
                                  [](const auto &) {
                                      ADD_FAILURE();
                                  }};
     std::visit(visitor2, decision2);
+    EXPECT_EQ(status2, CContentRestorator::EReadingBehahve::OllamaHasMore);
 }
 
 TEST_F(ContentRestoratorTest, TestResetWorks)
 {
     CContentRestorator restorer(toFind);
     {
-        const auto decision = restorer.Update(BuildChatResponse(jsonA));
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonA));
         const LambdaVisitor visitor{[](const CContentRestorator::TDetected &det) {
                                         EXPECT_EQ(det.whatDetected, ExpectedContent(jsonA));
                                     },
@@ -195,23 +274,25 @@ TEST_F(ContentRestoratorTest, TestResetWorks)
                                         ADD_FAILURE();
                                     }};
         std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaSentAll);
     }
     {
         SCOPED_TRACE("It should be locked as already detected.");
-        const auto decision = restorer.Update(BuildChatResponse(jsonCommon));
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonCommon));
         const LambdaVisitor visitor{[](const CContentRestorator::TAlreadyDetected &) {
                                     },
                                     [](const auto &) {
                                         ADD_FAILURE();
                                     }};
         std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
     }
 
     restorer.Reset();
     {
         SCOPED_TRACE("After Reset, the restored state should behave normally: ordinary text leads "
                      "to PassToUser.");
-        const auto decision = restorer.Update(BuildChatResponse(jsonCommon));
+        const auto [status, decision] = restorer.Update(BuildChatResponse(jsonCommon));
         const LambdaVisitor visitor{[](const CContentRestorator::TPassToUser &pass) {
                                         EXPECT_EQ(pass.collectedString,
                                                   ExpectedContent(jsonCommon));
@@ -220,63 +301,22 @@ TEST_F(ContentRestoratorTest, TestResetWorks)
                                         ADD_FAILURE();
                                     }};
         std::visit(visitor, decision);
+        EXPECT_EQ(status, CContentRestorator::EReadingBehahve::OllamaHasMore);
     }
 }
 
 TEST_F(ContentRestoratorTest, TestEmptyJson)
 {
     CContentRestorator restorer(toFind);
-    const auto decision = restorer.Update(kEmptyResponse);
+    const auto [status, decision] = restorer.Update(kEmptyResponse);
 
-    const LambdaVisitor visitor{[](const CContentRestorator::TNeedMoreData &) {
+    const LambdaVisitor visitor{[](const CContentRestorator::TAlreadyDetected &) {
                                 },
                                 [](const auto &) {
                                     ADD_FAILURE();
                                 }};
     std::visit(visitor, decision);
-}
-
-TEST_F(ContentRestoratorTest, TestWithPartialAndEmptyData_CCC)
-{
-    CContentRestorator restorer(toFind);
-
-    // "_CC" — not enough yet
-    const auto decision1 = restorer.Update(BuildChatResponse(jsonC1));
-    const LambdaVisitor visitor1{[](const CContentRestorator::TNeedMoreData &) {
-                                 },
-                                 [](const auto &) {
-                                     ADD_FAILURE();
-                                 }};
-    std::visit(visitor1, decision1);
-
-    // Empty chunk
-    const auto decision2 = restorer.Update(kEmptyResponse); // empty data
-    const LambdaVisitor visitor2{[](const CContentRestorator::TNeedMoreData &) {
-                                 },
-                                 [](const auto &) {
-                                     ADD_FAILURE();
-                                 }};
-    std::visit(visitor2, decision2);
-
-    // "_CCC" should be detected after "_CC" + empty + "23"
-    const auto decision3 = restorer.Update(BuildChatResponse(jsonC2)); // "_CCC23"
-    const LambdaVisitor visitor3{[](const CContentRestorator::TDetected &det) {
-                                     EXPECT_EQ(det.whatDetected, "_CCC");
-                                     EXPECT_EQ(det.collectedString,
-                                               ExpectedContent(jsonC1) + ExpectedContent(jsonC2));
-                                 },
-                                 [](const auto &) {
-                                     ADD_FAILURE();
-                                 }};
-    std::visit(visitor3, decision3);
-
-    const auto decision4 = restorer.Update(kEmptyResponse);
-    const LambdaVisitor visitor4{[](const CContentRestorator::TAlreadyDetected &) {
-                                 },
-                                 [](const auto &) {
-                                     ADD_FAILURE();
-                                 }};
-    std::visit(visitor4, decision4);
+    EXPECT_EQ(status, CContentRestorator::EReadingBehahve::CommunicationFailure);
 }
 
 } // namespace Testing
