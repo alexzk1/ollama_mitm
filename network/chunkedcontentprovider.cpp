@@ -169,7 +169,7 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
 
 std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
 {
-    const auto threadedOllama = [&](const auto &shouldStopPtr) {
+    auto threadedOllama = [&](const auto &shouldStopPtr) {
         // Setup ollama handler, it is representation of 1 ollama response, it can be called
         // multiply times if response is json-chunked.
         auto commandDetector = std::make_shared<CContentRestorator>(kOllamaKeywords);
@@ -306,7 +306,7 @@ std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
         });
         std::this_thread::sleep_for(200ms);
     };
-    return utility::startNewRunner(threadedOllama);
+    return utility::startNewRunner(std::move(threadedOllama));
 }
 
 CChunkedContentProvider::TCommObject::TCommObject() :
