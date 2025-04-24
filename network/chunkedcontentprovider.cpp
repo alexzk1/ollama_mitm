@@ -306,6 +306,8 @@ std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
         });
         std::this_thread::sleep_for(200ms);
     };
+    // Warning! It is tempting to use pool, but than we need to be sure this object exists until
+    // lambda exists in pool.
     return utility::startNewRunner(std::move(threadedOllama));
 }
 
