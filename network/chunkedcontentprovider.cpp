@@ -1,23 +1,31 @@
 #include "chunkedcontentprovider.hpp" // IWYU pragma: keep
 
 #include <common/lambda_visitors.h>
+#include <common/runners.h>
 #include <network/contentrestorator.hpp>
 #include <network/ollama_proxy_config.hpp>
 #include <ollama/httplib.h>
 #include <ollama/json.hpp>
 #include <ollama/ollama.hpp>
 
+#include <atomic>
+#include <chrono> // IWYU pragma: keep
 #include <cstddef>
 #include <exception>
+#include <future>
 #include <initializer_list>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
+
+using namespace std::chrono_literals;
 
 namespace {
 
@@ -63,27 +71,50 @@ void WriteToSink(httplib::DataSink &sink, const std::string &what)
     // TODO: here can be different encoding so length in bytes would be different.
     if (!what.empty())
     {
-        sink.write(what.c_str(), what.size());
+        try
+        {
+            sink.write(what.c_str(), what.size());
+        }
+        catch (std::exception &e)
+        {
+            std::cerr << "Exception on writing to sink: " << e.what() << std::endl;
+        }
     }
-}
-
-void WriteToSink(httplib::DataSink &sink, const ollama::response &ollamaResponse)
-{
-    WriteToSink(sink, ollamaResponse.as_json_string());
 }
 
 constexpr std::initializer_list<std::string_view> kOllamaKeywords{"AI_GET_URL"};
 
 } // namespace
 
+CChunkedContentProvider::TUserRequest::TUserRequest(const httplib::Request &request) :
+    userRequest(request),
+    parsedUserJson(nlohmann::json::parse(request.body))
+{
+}
+
+CChunkedContentProvider::~CChunkedContentProvider()
+{
+    proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [](auto &os) {
+        os << "[DEBUG] TOllamaLifeHandler: Destructor called, resetting thread." << std::endl;
+    });
+    commObject.DisconnectAll();
+    ollamaThread.reset();
+}
+
 CChunkedContentProvider::CChunkedContentProvider(const httplib::Request &userRequest,
                                                  const TOllamaProxyConfig &proxyConfig) :
-    ollamaServer(proxyConfig.CreateOllamaUrl()),
-    parsedUserJson(nlohmann::json::parse(userRequest.body)),
     userRequest(userRequest),
-    proxyConfig(proxyConfig)
+    proxyConfig(proxyConfig),
+    ollamaThread(nullptr),
+    commObject()
 {
     constexpr auto kStreamKey = "stream";
+    const auto &parsedUserJson = this->userRequest.parsedUserJson;
+
+    proxyConfig.ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [&parsedUserJson](auto &os) {
+        os << "[DEBUG] CChunkedContentProvider::operator(), we have stored request to process: \n"
+           << parsedUserJson << std::endl;
+    });
 
     if (!parsedUserJson.contains(kStreamKey))
     {
@@ -97,48 +128,82 @@ CChunkedContentProvider::CChunkedContentProvider(const httplib::Request &userReq
     {
         throw std::runtime_error("Expected 'stream' field to be true.");
     }
+
+    ollamaThread = RunOllamaThread();
 }
 
 bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSink &sink)
 {
-    proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [this](auto &os) {
-        os << "[DEBUG] CChunkedContentProvider::operator(), we have stored request to process: \n"
-           << parsedUserJson << std::endl;
-    });
     try
     {
-        if (!sink.is_writable())
+        while (const auto str = commObject.GetStringForUser())
         {
-            proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Warning, [](auto &os) {
-                os << "[WARNING] Sink is not writable even before asking Ollama." << std::endl;
-            });
-            return false;
+            proxyConfig.get().ExecIfFittingVerbosity(
+              EOllamaProxyVerbosity::Debug, [&str](auto &os) {
+                  os << "[DEBUG] Callback to write to user, sending: \n" << *str << std::endl;
+              });
+            if (!sink.is_writable())
+            {
+                proxyConfig.get().ExecIfFittingVerbosity(
+                  EOllamaProxyVerbosity::Warning, [](auto &os) {
+                      os << "[WARNING] Sink is not writable even before asking Ollama."
+                         << std::endl;
+                  });
+                commObject.DisconnectAll();
+                return false;
+            }
+            WriteToSink(sink, *str);
         }
+        // Keep channel opened to user.
+        return true;
+    }
+    catch (std::exception &e)
+    {
+        proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Error, [&e](auto &os) {
+            os << "[ERROR] Exception in CChunkedContentProvider: " << e.what() << std::endl;
+        });
+    }
+    commObject.DisconnectAll();
+    return false;
+}
+
+std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
+{
+    const auto threadedOllama = [&](const auto &shouldStopPtr) {
+        // Setup ollama handler, it is representation of 1 ollama response, it can be called
+        // multiply times if response is json-chunked.
         auto commandDetector = std::make_shared<CContentRestorator>(kOllamaKeywords);
-        const auto ollamaResponseHandler = [&sink, commandDetector = std::move(commandDetector),
-                                            this](const ollama::response &ollamaResponse) -> bool {
+
+        const auto ollamaResponseHandler =
+          [commandDetector = std::move(commandDetector), this](
+            const ollama::response &ollamaResponse,
+            std::shared_ptr<std::promise<CContentRestorator::TDetected>> detectionPromise) -> bool {
             // We should return true/false from callback to ollama server, AND stop sink if
             // we're done, otherwise client will keep repeating.
-            const auto respondToUserAndOllama =
-              [&sink](CContentRestorator::EReadingBehahve status) {
-                  switch (status)
-                  {
-                      case CContentRestorator::EReadingBehahve::OllamaHasMore:
-                          return true; // Keep talking to Ollama.
-                      case CContentRestorator::EReadingBehahve::CommunicationFailure:
-                          [[fallthrough]];
-                      case CContentRestorator::EReadingBehahve::OllamaSentAll:
-                          sink.done(); // Close user's connection.
-                          break;
-                  }
-                  return false; // Finish talks to Ollama.
-              };
+            const auto respondToUserAndOllama = [this](CContentRestorator::EReadingBehahve status) {
+                switch (status)
+                {
+                    case CContentRestorator::EReadingBehahve::OllamaHasMore:
+                        return !commObject.IsDisconnected(); // Keep talking to Ollama.
+                    case CContentRestorator::EReadingBehahve::CommunicationFailure:
+                        [[fallthrough]];
+                    case CContentRestorator::EReadingBehahve::OllamaSentAll:
+                        commObject.DisconnectAll();
+                        break;
+                }
+                return false; // Finish talks to Ollama.
+            };
 
             const auto writeAsJson = [&](const std::string &plain) {
                 auto jobj = ollamaResponse.as_json();
                 jobj["message"]["content"] = plain;
-                WriteToSink(sink, ollama::response(jobj.dump(), ollama::message_type::chat));
+                commObject.SendToUser(ollama::response(jobj.dump(), ollama::message_type::chat));
             };
+
+            if (commObject.IsDisconnected())
+            {
+                return false;
+            }
 
             try
             {
@@ -154,58 +219,41 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
                 {
                     proxyConfig.get().ExecIfFittingVerbosity(
                       EOllamaProxyVerbosity::Warning, [&ollamaResponse](auto &os) {
-                          os
-                            << "[WARNING] Response from ollama does not have boolean 'done' field. "
-                               "Stopping communications."
-                            << ollamaResponse.as_json() << std::endl;
+                          os << "[WARNING] Response from ollama does not have boolean 'done' "
+                                "field. "
+                                "Stopping communications."
+                             << ollamaResponse.as_json() << std::endl;
                       });
                     return respondToUserAndOllama(status);
                 }
 
-                // Cannot write to user, drop both.
-                if (!sink.is_writable())
-                {
-                    proxyConfig.get().ExecIfFittingVerbosity(
-                      EOllamaProxyVerbosity::Warning, [](auto &os) {
-                          os << "[WARNING] Sink to user is not writtable but we got some response "
-                                "from Ollama yet."
-                             << std::endl;
-                      });
-                    return respondToUserAndOllama(
-                      CContentRestorator::EReadingBehahve::CommunicationFailure);
-                }
-
                 const LambdaVisitor visitor{
                   [&](const CContentRestorator::TAlreadyDetected &) {
-                      WriteToSink(sink, ollamaResponse);
-                      return true;
+                      commObject.SendToUser(ollamaResponse);
+                      return !commObject.IsDisconnected();
                   },
                   [&](const CContentRestorator::TNeedMoreData &data) {
                       if (data.status == CContentRestorator::EReadingBehahve::OllamaSentAll)
                       {
                           writeAsJson(data.currentlyCollectedString);
                       }
-                      return true;
+                      return !commObject.IsDisconnected();
                   },
                   [&](const CContentRestorator::TPassToUser &pass) {
                       writeAsJson(pass.collectedString);
-                      return true;
+                      return !commObject.IsDisconnected();
                   },
-                  [&](const CContentRestorator::TDetected &) {
-                      // Here we have full ollama's response (request by model) to do something,
-                      // It must not be sent to user. It must be served, and sent as new request to
-                      // ollama than repeat whole ollamaResponseHandler () again.
-                      throw std::runtime_error("TODO: not implemented.");
+                  [&](CContentRestorator::TDetected detected) {
+                      // Here we have full ollama's response (request by model) to do
+                      // something, It must not be sent to user. It must be served, and sent
+                      // as new request to ollama than repeat whole ollamaResponseHandler ()
+                      // again.
+                      detectionPromise->set_value(std::move(detected));
                       return false;
                   },
                 };
-                if (std::visit(visitor, decision))
-                {
-                    return respondToUserAndOllama(status);
-                }
-                // We get here by CContentRestorator::TDetected, which means we close this channel
-                // to Ollama, but we keep channel to the user.
-                return false;
+
+                return std::visit(visitor, decision) && respondToUserAndOllama(status);
             }
             catch (std::exception &e)
             {
@@ -219,15 +267,78 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
               CContentRestorator::EReadingBehahve::CommunicationFailure);
         }; // ollamaResponseHandler[]()
 
-        auto request = CreateChatRequest(parsedUserJson);
-        return ollamaServer.chat(request, ollamaResponseHandler);
-    }
-    catch (std::exception &e)
-    {
-        proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Error, [&e](auto &os) {
-            os << "[ERROR] Exception in CChunkedContentProvider: " << e.what() << std::endl;
-        });
-    }
+        Ollama ollamaServer(proxyConfig.get().CreateOllamaUrl());
+        const auto execOllamaRequest = [&ollamaResponseHandler, this,
+                                        &ollamaServer](ollama::request request) {
+            auto detectionPromise = std::make_shared<std::promise<CContentRestorator::TDetected>>();
+            auto fut = detectionPromise->get_future();
 
-    return false;
+            ollamaServer.chat(
+              request, [&, detectionPromise = std::move(detectionPromise)](const auto &r) -> bool {
+                  return ollamaResponseHandler(r, std::move(detectionPromise));
+              });
+            return std::move(fut);
+        };
+
+        const auto isThreadLoopingYet = [&shouldStopPtr, this]() {
+            return !(*shouldStopPtr) && !commObject.IsDisconnected();
+        };
+
+        auto request = CreateChatRequest(userRequest.parsedUserJson);
+        while (isThreadLoopingYet())
+        {
+            auto fut = execOllamaRequest(std::move(request));
+            request = {};
+            while (isThreadLoopingYet())
+            {
+                if (std::future_status::ready == fut.wait_for(250ms) && isThreadLoopingYet())
+                {
+                    // Handle request from Ollama, set new value to "request" which would be
+                    // handler's result.
+
+                    break;
+                }
+            }
+        }
+        commObject.DisconnectAll();
+        proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [](auto &os) {
+            os << "[DEBUG] Ollama's thread loop ended. " << std::endl;
+        });
+        std::this_thread::sleep_for(200ms);
+    };
+    return utility::startNewRunner(threadedOllama);
+}
+
+CChunkedContentProvider::TCommObject::TCommObject() :
+    ollamaToUser(std::make_unique<TQueue>()),
+    disconnectAll(std::make_unique<std::atomic<bool>>(false))
+{
+}
+
+void CChunkedContentProvider::TCommObject::SendToUser(std::string what) const
+{
+    if (!IsDisconnected())
+    {
+        ollamaToUser->push(std::move(what));
+    }
+}
+
+void CChunkedContentProvider::TCommObject::SendToUser(const ollama::response &ollamaResponse) const
+{
+    SendToUser(ollamaResponse.as_json_string());
+}
+
+void CChunkedContentProvider::TCommObject::DisconnectAll() const
+{
+    disconnectAll->store(true);
+}
+
+bool CChunkedContentProvider::TCommObject::IsDisconnected() const
+{
+    return disconnectAll->load();
+}
+
+std::optional<std::string> CChunkedContentProvider::TCommObject::GetStringForUser() const
+{
+    return ollamaToUser->pop();
 }
