@@ -2,6 +2,7 @@
 
 #include <common/cm_ctors.h>
 #include <common/safe_queue.h>
+#include <network/contentrestorator.hpp>
 #include <network/ollama_proxy_config.hpp>
 #include <ollama/httplib.h>
 #include <ollama/json.hpp>
@@ -27,6 +28,7 @@ class CChunkedContentProvider
 
   private:
     std::shared_ptr<std::thread> RunOllamaThread();
+    ollama::request MakeResponseForOllama(CContentRestorator::TDetected aiCommand) const;
 
     struct TUserRequest
     {

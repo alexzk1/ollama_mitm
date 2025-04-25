@@ -1,16 +1,15 @@
 #pragma once
 
+#include <commands/ollama_commands.hpp>
 #include <ollama/ollama.hpp>
 
-#include <initializer_list>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <variant>
 #include <vector>
 
 // Words which ollama will pass to us asking for the help.
-using TAssistWords = std::initializer_list<std::string_view>;
+using TAssistWords = std::vector<std::string>;
 
 ///@brief This objects tries to recognize beginning of the string in chunked data.
 /// If it is recognized it keeps consuming input and returns whole full message.
@@ -41,7 +40,7 @@ class CContentRestorator
     struct TDetected
     {
         EReadingBehahve status;
-        const std::string_view &whatDetected;
+        const std::string &whatDetected;
         std::string collectedString;
     };
 
@@ -56,7 +55,8 @@ class CContentRestorator
   public:
     using TUpdateResult = std::pair<EReadingBehahve, TDecision>;
 
-    explicit CContentRestorator(const TAssistWords &aWhatToLookFor);
+    explicit CContentRestorator(const TAiCommands &aWhatToLookFor);
+    explicit CContentRestorator(TAssistWords aWhatToLookFor);
 
     /// @brief Resets the state of the detector. Can be called after TAlreadyDetected is returned to
     /// reuse object again.
@@ -70,16 +70,18 @@ class CContentRestorator
     static std::optional<bool> IsModelDone(const ollama::response &respFromOllama);
 
   private:
-    using TStorage = std::vector<std::string_view>;
+    using TStorage = TAssistWords;
     TStorage whatToLookFor;
     std::optional<TStorage::const_iterator> lastDetected;
     std::string lastData;
 
+    [[nodiscard]]
     bool IsPassToUser() const
     {
         return lastDetected.has_value() && whatToLookFor.cend() == *lastDetected;
     }
 
+    [[nodiscard]]
     bool IsDetected() const
     {
         return lastDetected.has_value() && whatToLookFor.cend() != *lastDetected;

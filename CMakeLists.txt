@@ -42,8 +42,16 @@ FetchContent_Declare(
   GIT_TAG           v0.9.5
 )
 
+set(USE_SYSTEM_TZ_DB ON) # use system timezone support
+set(BUILD_TZ_LIB ON) # build timezone support
+FetchContent_Declare(
+  date
+  GIT_REPOSITORY    https://github.com/HowardHinnant/date.git
+  GIT_TAG           v3.0.3
+)
+
 #Library does not provide cmake files.
-FetchContent_MakeAvailable(ollama-hpp)
+FetchContent_MakeAvailable(ollama-hpp date)
 message(STATUS "ollama-hpp_SOURCE_DIR: ${ollama-hpp_SOURCE_DIR}")
 if(NOT EXISTS "${ollama-hpp_SOURCE_DIR}/include/ollama.hpp")
   message(FATAL_ERROR "ollama-hpp include directory not found at ${ollama-hpp_SOURCE_DIR}")
@@ -76,15 +84,21 @@ file(GLOB NETWORK_FOLDER
         network/*.hpp
         network/*.cpp
     )
-add_executable(ollama_mitm  ${BASE_FOLDER} ${COMMON_FOLDER} ${NETWORK_FOLDER})
+file(GLOB COMMANDS_FOLDER
+          commands/*.h
+          commands/*.hpp
+          commands/*.cpp
+    )
+add_executable(ollama_mitm  ${BASE_FOLDER} ${COMMON_FOLDER} ${NETWORK_FOLDER} ${COMMANDS_FOLDER})
 target_include_directories(ollama_mitm PUBLIC
                     ${CMAKE_CURRENT_LIST_DIR}
                 )
-target_link_libraries(ollama_mitm PRIVATE ollama-hpp)
+target_link_libraries(ollama_mitm PRIVATE ollama-hpp date date-tz)
 
 source_group("source / main" FILES ${BASE_FOLDER})
 source_group("source / common" FILES ${COMMON_FOLDER})
 source_group("source / network" FILES ${NETWORK_FOLDER})
+source_group("source / ai_commands" FILES ${COMMANDS_FOLDER})
 
 #Tests
 
@@ -92,6 +106,7 @@ source_group("source / network" FILES ${NETWORK_FOLDER})
 set(TO_TEST_FILES
     ${COMMON_FOLDER}
     ${NETWORK_FOLDER}
+    ${COMMANDS_FOLDER}
 )
 
 #Automatically list test files.
@@ -108,6 +123,7 @@ if (TESTS_LIST_FILES_COUNT GREATER 0)
     )
     target_link_libraries(ollama_mitm_tests PRIVATE
                         ollama-hpp
+                        date date-tz
                         gtest
                         gmock
     )

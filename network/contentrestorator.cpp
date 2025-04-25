@@ -1,24 +1,46 @@
 #include "contentrestorator.hpp" // IWYU pragma: keep
 
+#include <commands/ollama_commands.hpp>
 #include <ollama/ollama.hpp>
 
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 
-CContentRestorator::CContentRestorator(const TAssistWords &aWhatToLookFor) :
-    whatToLookFor(aWhatToLookFor),
+namespace {
+TAssistWords BuildWordsList(const TAiCommands &aWhatToLookFor)
+{
+    TAssistWords words;
+    words.reserve(aWhatToLookFor.size());
+    std::transform(aWhatToLookFor.begin(), aWhatToLookFor.end(), std::back_inserter(words),
+                   [](const TAiCommand &cmd) {
+                       return cmd.keyword;
+                   });
+    return words;
+}
+} // namespace
+
+CContentRestorator::CContentRestorator(const TAiCommands &aWhatToLookFor) :
+    CContentRestorator(BuildWordsList(aWhatToLookFor))
+{
+}
+
+CContentRestorator::CContentRestorator(TAssistWords aWhatToLookFor) :
+    whatToLookFor(std::move(aWhatToLookFor)),
     lastDetected(std::nullopt)
 {
     // Sort whatToLookFor by string length
     if (whatToLookFor.size() > 1)
     {
         std::sort(whatToLookFor.begin(), whatToLookFor.end(), [](const auto &a, const auto &b) {
+            assert(a.size() < 10000);
+            assert(b.size() < 10000);
             return a.size() < b.size();
         });
     }

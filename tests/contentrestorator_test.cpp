@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <string>
-#include <string_view>
 #include <variant>
 
 #include <gtest/gtest.h>
@@ -16,7 +15,7 @@ namespace Testing {
 class ContentRestoratorTest : public ::testing::Test
 {
   public:
-    inline static constexpr TAssistWords toFind = {"_A", "_BB", "_CCC"};
+    inline static const TAssistWords toFind = {"_A", "_BB", "_CCC"};
 
     inline static const std::string jsonCommon =
       R"({"done": false, "message": { "content": "Hello, world!" } })";

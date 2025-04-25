@@ -8,6 +8,7 @@
 #include <ollama/json.hpp>
 #include <ollama/ollama.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono> // IWYU pragma: keep
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include <future>
 #include <initializer_list>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -82,8 +84,6 @@ void WriteToSink(httplib::DataSink &sink, const std::string &what)
     }
 }
 
-constexpr std::initializer_list<std::string_view> kOllamaKeywords{"AI_GET_URL"};
-
 } // namespace
 
 CChunkedContentProvider::TUserRequest::TUserRequest(const httplib::Request &request) :
@@ -109,12 +109,7 @@ CChunkedContentProvider::CChunkedContentProvider(const httplib::Request &userReq
     commObject()
 {
     constexpr auto kStreamKey = "stream";
-    const auto &parsedUserJson = this->userRequest.parsedUserJson;
-
-    proxyConfig.ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [&parsedUserJson](auto &os) {
-        os << "[DEBUG] CChunkedContentProvider::operator(), we have stored request to process: \n"
-           << parsedUserJson << std::endl;
-    });
+    auto &parsedUserJson = this->userRequest.parsedUserJson;
 
     if (!parsedUserJson.contains(kStreamKey))
     {
@@ -128,6 +123,30 @@ CChunkedContentProvider::CChunkedContentProvider(const httplib::Request &userReq
     {
         throw std::runtime_error("Expected 'stream' field to be true.");
     }
+
+    auto &msgs = parsedUserJson["messages"];
+
+    auto it = std::adjacent_find(msgs.begin(), msgs.end(), [](const auto &ja, const auto &jb) {
+        return ja["role"] != jb["role"] && ja["role"] == "system";
+    });
+    std::advance(it, 1);
+    if (it == msgs.end())
+    {
+        it = msgs.begin();
+    }
+
+    for (const auto &aiCommand : proxyConfig.GetAiCommands())
+    {
+        nlohmann::json js;
+        js["content"] = aiCommand.instructionForAi;
+        js["role"] = "system";
+        msgs.insert(it, std::move(js));
+    }
+
+    proxyConfig.ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [&parsedUserJson](auto &os) {
+        os << "[DEBUG] CChunkedContentProvider::operator(), we have stored request to process: \n"
+           << parsedUserJson << std::endl;
+    });
 
     ollamaThread = RunOllamaThread();
 }
@@ -172,7 +191,8 @@ std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
     auto threadedOllama = [&](const auto &shouldStopPtr) {
         // Setup ollama handler, it is representation of 1 ollama response, it can be called
         // multiply times if response is json-chunked.
-        auto commandDetector = std::make_shared<CContentRestorator>(kOllamaKeywords);
+        auto commandDetector =
+          std::make_shared<CContentRestorator>(proxyConfig.get().GetAiCommands());
 
         const auto ollamaResponseHandler =
           [commandDetector = std::move(commandDetector), this](
@@ -296,6 +316,13 @@ std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
                     // Handle request from Ollama, set new value to "request" which would be
                     // handler's result.
 
+                    CContentRestorator::TDetected aiCommand = std::move(fut.get());
+                    proxyConfig.get().ExecIfFittingVerbosity(
+                      EOllamaProxyVerbosity::Debug, [&](auto &os) {
+                          os << "[DEBUG] Received request from ollama: " << aiCommand.whatDetected
+                             << std::endl;
+                      });
+                    request = MakeResponseForOllama(std::move(aiCommand));
                     break;
                 }
             }
@@ -309,6 +336,41 @@ std::shared_ptr<std::thread> CChunkedContentProvider::RunOllamaThread()
     // Warning! It is tempting to use pool, but than we need to be sure this object exists until
     // lambda exists in pool.
     return utility::startNewRunner(std::move(threadedOllama));
+}
+
+ollama::request
+CChunkedContentProvider::MakeResponseForOllama(CContentRestorator::TDetected aiCommand) const
+{
+    const auto &commands = proxyConfig.get().GetAiCommands();
+    const auto it = std::find_if(commands.begin(), commands.end(), [&aiCommand](const auto &cmd) {
+        return cmd.keyword == aiCommand.whatDetected;
+    });
+
+    // Ollama asked us to do something. Do it.
+    auto clone = userRequest.parsedUserJson;
+
+    nlohmann::json js;
+    js["role"] = "user";
+
+    std::string resp;
+    //= "In response to " + aiCommand.whatDetected + " result is:\n";
+    if (it == commands.end())
+    {
+        resp.append("Backend failure. This request cannot be processed now.");
+    }
+    else
+    {
+        resp.append(it->resultProvider(aiCommand.collectedString));
+    }
+    resp.append("\n");
+
+    proxyConfig.get().ExecIfFittingVerbosity(EOllamaProxyVerbosity::Debug, [&resp](auto &os) {
+        os << "[DEBUG]Backend response to ollama: " << resp << std::endl;
+    });
+
+    js["content"] = std::move(resp);
+    clone["messages"].emplace_back(std::move(js));
+    return CreateChatRequest(clone);
 }
 
 CChunkedContentProvider::TCommObject::TCommObject() :

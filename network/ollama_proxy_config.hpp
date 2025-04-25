@@ -1,5 +1,7 @@
 #pragma once
 
+#include <commands/ollama_commands.hpp>
+
 #include <cctype>
 #include <cstdint>
 #include <iostream>
@@ -63,8 +65,17 @@ struct TOllamaProxyConfig
         return res;
     }
 
+    /// @returns A string representing the URL to connect to Ollama.
+    [[nodiscard]]
     std::string CreateOllamaUrl() const
     {
         return "http://" + ollamaHost + ":" + std::to_string(ollamaPort);
+    }
+
+    /// @returns A reference to the list of AI commands.
+    [[nodiscard]]
+    const TAiCommands &GetAiCommands() const
+    {
+        return GetAiCommandsList();
     }
 };
