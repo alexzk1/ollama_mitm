@@ -1,6 +1,7 @@
 #include "contentrestorator.hpp" // IWYU pragma: keep
 
 #include <commands/ollama_commands.hpp>
+#include <common/lambda_visitors.h>
 #include <ollama/ollama.hpp>
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 namespace {
 TAssistWords BuildWordsList(const TAiCommands &aWhatToLookFor)
@@ -19,8 +21,8 @@ TAssistWords BuildWordsList(const TAiCommands &aWhatToLookFor)
     TAssistWords words;
     words.reserve(aWhatToLookFor.size());
     std::transform(aWhatToLookFor.begin(), aWhatToLookFor.end(), std::back_inserter(words),
-                   [](const TAiCommand &cmd) {
-                       return cmd.keyword;
+                   [](const auto &cmd) {
+                       return cmd.first;
                    });
     return words;
 }
@@ -93,6 +95,11 @@ CContentRestorator::TUpdateResult CContentRestorator::Update(const ollama::respo
     }
     const auto status = *isDone ? EReadingBehahve::OllamaSentAll : EReadingBehahve::OllamaHasMore;
 
+    const auto finalizePassToUser = [&]() {
+        lastDetected = whatToLookFor.cend();
+        return CContentRestorator::TUpdateResult{status, TPassToUser{status, std::move(lastData)}};
+    };
+
     const auto isRecognizedAndFullReceived = [&status, this]() {
         return IsDetected() && status == EReadingBehahve::OllamaSentAll;
     };
@@ -116,6 +123,20 @@ CContentRestorator::TUpdateResult CContentRestorator::Update(const ollama::respo
     if (isRecognizedAndFullReceived())
     {
         return AllReceivedResult();
+    }
+
+    if (isRecognizedAndParticularyReceived())
+    {
+        LambdaVisitor visitor{[&](auto) -> CContentRestorator::TUpdateResult {
+                                  return {status, TNeedMoreData{status, lastData}};
+                              },
+                              [&](TThatWasResponseToUser) {
+                                  // This is the case when ollama starts initial chatting
+                                  // with keyword.
+                                  return finalizePassToUser();
+                              }};
+        const std::string &key = **lastDetected;
+        return std::visit(visitor, GetAiCommandsList().at(key)(key, lastData));
     }
 
     // Find the upper bound for strings that could potentially match. These are those with size less
@@ -156,6 +177,5 @@ CContentRestorator::TUpdateResult CContentRestorator::Update(const ollama::respo
     }
 
     // Longest string was checked. Just pass all following to user.
-    lastDetected = whatToLookFor.cend();
-    return {status, TPassToUser{status, std::move(lastData)}};
+    return finalizePassToUser();
 }
