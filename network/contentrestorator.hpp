@@ -3,8 +3,10 @@
 #include <commands/ollama_commands.hpp>
 #include <ollama/ollama.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -16,7 +18,7 @@ using TAssistWords = std::vector<std::string>;
 class CContentRestorator
 {
   public:
-    enum class EReadingBehahve {
+    enum class EReadingBehahve : std::uint8_t {
         OllamaHasMore,
         OllamaSentAll,
         CommunicationFailure,
@@ -75,12 +77,14 @@ class CContentRestorator
     std::optional<TStorage::const_iterator> lastDetected;
     std::string lastData;
 
+    /// @returns true if we're sure this is the message for user.
     [[nodiscard]]
     bool IsPassToUser() const
     {
         return lastDetected.has_value() && whatToLookFor.cend() == *lastDetected;
     }
 
+    /// @returns true if we had keyword detected.
     [[nodiscard]]
     bool IsDetected() const
     {

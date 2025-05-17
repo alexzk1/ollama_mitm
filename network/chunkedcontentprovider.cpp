@@ -5,6 +5,7 @@
 #include <common/runners.h>
 #include <network/contentrestorator.hpp>
 #include <network/ollama_proxy_config.hpp>
+#include <network/user_ping_generator.hpp>
 #include <ollama/httplib.h>
 #include <ollama/json.hpp>
 #include <ollama/ollama.hpp>
@@ -197,10 +198,8 @@ bool CChunkedContentProvider::operator()(std::size_t /*offset*/, httplib::DataSi
                 try
                 {
                     std::ostringstream oss;
-                    oss << std::hex << what->size() << "\r\n" // размер чанка в hex
-                        << *what << "\r\n";                   // сами данные
+                    oss << std::hex << what->size() << "\r\n" << *what << "\r\n";
                     const std::string chunk = oss.str();
-                    // const auto &chunk = *what;
                     DebugDump("operator() to write to user, sending\n", chunk,
                               "\n\tOf size: ", chunk.size());
                     sink.write(chunk.c_str(), chunk.size());
